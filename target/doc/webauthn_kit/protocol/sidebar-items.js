@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["verify_authentication","verify_registration"],"struct":["AuthenticationParams"]};

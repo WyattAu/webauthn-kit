@@ -1,0 +1,31 @@
+[package]
+name = "webauthn-kit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Standalone WebAuthn/FIDO2 passkey verification kit: CTAP2 authenticator data parsing, COSE ES256/RS256 signature verification via ring, challenge freshness/replay protection and sign-count clone detection."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/WyattAu/webauthn-kit"
+readme = "README.md"
+keywords = ["webauthn", "passkeys", "fido2", "ctap2", "authentication"]
+categories = ["authentication", "cryptography"]
+
+[dependencies]
+base64 = "0.22"
+ciborium = "0.2"
+ring = "0.17"
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[features]
+default = ["std"]
+std = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+proptest = "1"
+# Self dev-dependency: enables the `serde` feature for integration tests so
+# DTO (de)serialization can be exercised without forcing `serde` on consumers.
+webauthn-kit = { path = ".", features = ["serde"] }

@@ -1,0 +1,84 @@
+//! Relying-party configuration.
+
+/// `WebAuthn` relying party configuration.
+///
+/// This is the kit-local replacement for any application-specific auth config
+/// struct: it carries everything the protocol layer needs and nothing else.
+/// Application concerns (feature flags, storage, session handling) are
+/// deliberately excluded.
+///
+/// # Security notes
+///
+/// - `rp_id` must be the registrable domain suffix shared by all origins that
+///   may perform `WebAuthn` ceremonies. It is hashed (SHA-256) and compared
+///   against the `rpIdHash` embedded in authenticator data; a wrong value
+///   fails every verification.
+/// - Every entry in `rp_origins` is an exact-match allow-list entry. Origins
+///   are compared byte-for-byte against `clientDataJSON.origin`; scheme,
+///   host, and port must all match. List only origins you fully trust.
+/// - `allowed_algorithms` controls which COSE algorithms are *advertised* to
+///   authenticators in registration options. Runtime verification currently
+///   implements ES256 (-7) and RS256 (-257) only; other algorithms are
+///   rejected with [`crate::WebauthnError::UnsupportedAlgorithm`] regardless
+///   of this setting.
+#[derive(Debug, Clone)]
+pub struct WebauthnConfig {
+    /// Relying party ID (effective domain, e.g. `"example.com"`).
+    ///
+    /// Must NOT include scheme or port. See struct-level security notes.
+    pub rp_id: String,
+    /// Human-readable relying party name (advertised in registration options).
+    pub rp_name: String,
+    /// Allowed origins for `WebAuthn` ceremonies (exact match, e.g.
+    /// `"https://example.com"`).
+    pub rp_origins: Vec<String>,
+    /// COSE algorithm identifiers advertised for registration.
+    ///
+    /// Defaults to `[-7 (ES256), -257 (RS256)]`.
+    pub allowed_algorithms: Vec<i32>,
+    /// Challenge freshness window in seconds (default 300 = 5 minutes).
+    ///
+    /// Challenges older than this are rejected on consumption.
+    pub challenge_timeout_secs: u64,
+}
+
+impl Default for WebauthnConfig {
+    /// Sensible development defaults (`localhost` RP).
+    ///
+    /// Do not use `Default::default()` in production; set `rp_id` and
+    /// `rp_origins` to your real domain and HTTPS origin.
+    fn default() -> Self {
+        Self {
+            rp_id: "localhost".to_string(),
+            rp_name: "webauthn-kit".to_string(),
+            rp_origins: vec!["http://localhost:8080".to_string()],
+            allowed_algorithms: vec![-7, -257],
+            challenge_timeout_secs: 300,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default() {
+        let config = WebauthnConfig::default();
+        assert_eq!(config.rp_id, "localhost");
+        assert_eq!(config.rp_name, "webauthn-kit");
+        assert_eq!(config.rp_origins, vec!["http://localhost:8080"]);
+        assert_eq!(config.allowed_algorithms, vec![-7, -257]);
+        assert_eq!(config.challenge_timeout_secs, 300);
+    }
+
+    #[test]
+    fn test_config_custom_algorithms() {
+        let config = WebauthnConfig {
+            allowed_algorithms: vec![-7],
+            ..WebauthnConfig::default()
+        };
+        assert_eq!(config.allowed_algorithms.len(), 1);
+        assert_eq!(config.allowed_algorithms[0], -7);
+    }
+}
