@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["COSE_ALG_ES256","COSE_ALG_RS256","COSE_KTY_EC2","COSE_KTY_OKP","COSE_KTY_RSA"],"enum":["CosePublicKey"],"fn":["alg_to_name","base64_decode_urlsafe","base64_encode_urlsafe","cbor_bytes","cbor_map_entries","generate_challenge_bytes","parse_cose_key","verify_cose_signature"]};

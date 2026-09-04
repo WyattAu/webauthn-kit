@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["AllowCredential","AuthenticationOptions","AuthenticationResponse","AuthenticationResult","AuthenticatorSelection","ExcludeCredential","PubKeyCredParam","RegistrationOptions","RegistrationResponse","RegistrationResult","RelyingParty","WebauthnCredential","WebauthnUser"]};
