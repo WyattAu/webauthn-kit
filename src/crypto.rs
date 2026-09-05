@@ -302,10 +302,13 @@ impl RsaPublicKeyDer<'_> {
 
     /// DER-encode an INTEGER from a big-endian byte string.
     fn encode_integer(buf: &mut Vec<u8>, value: &[u8]) {
-        let mut v = value;
-        while v.len() > 1 && v[0] == 0 {
-            v = &v[1..];
-        }
+        // Strip leading zero octets, but keep at least one byte (a
+        // all-zero value encodes as a single 0x00 octet).
+        let start = value
+            .iter()
+            .position(|&b| b != 0)
+            .unwrap_or(value.len().saturating_sub(1));
+        let v = value.get(start..).unwrap_or(&[]);
         if v.first().is_some_and(|&b| b & 0x80 != 0) {
             buf.push(0x02);
             buf.push((v.len() + 1) as u8);
@@ -347,10 +350,10 @@ impl RsaPublicKeyDer<'_> {
             4
         };
         buf.resize(content_len + header_len, 0);
-        for i in (0..content_len).rev() {
-            buf[i + header_len] = buf[i];
+        buf.copy_within(..content_len, header_len);
+        if let Some(tag) = buf.first_mut() {
+            *tag = 0x30;
         }
-        buf[0] = 0x30;
         Self::encode_length_at(buf, 1, content_len);
     }
 
@@ -369,6 +372,12 @@ impl RsaPublicKeyDer<'_> {
     }
 
     /// DER-encode a length octet string at `offset` in `buf`.
+    ///
+    /// INVARIANT: the caller guarantees `buf.len() >= offset + needed`,
+    /// where `needed` is 1, 2, or 3 depending on `len` (callers size the
+    /// buffer via the matching `header_len` computation before calling).
+    /// The direct indexing below is therefore in-bounds by construction.
+    #[allow(clippy::indexing_slicing)]
     fn encode_length_at(buf: &mut [u8], offset: usize, len: usize) {
         if len < 0x80 {
             buf[offset] = len as u8;
@@ -404,6 +413,9 @@ pub fn alg_to_name(alg: i32) -> &'static str {
 pub fn generate_challenge_bytes() -> Vec<u8> {
     use ring::rand::SecureRandom;
     let mut bytes = [0u8; 32];
+    // INVARIANT: a failed OS CSPRNG is unrecoverable for security purposes
+    // (documented above) — panicking is the deliberate, correct behavior.
+    #[allow(clippy::expect_used)]
     ring::rand::SystemRandom::new()
         .fill(&mut bytes)
         .expect("OS CSPRNG unavailable; cannot generate secure challenge");
@@ -428,6 +440,15 @@ pub fn base64_decode_urlsafe(data: &str) -> Result<Vec<u8>, WebauthnError> {
         .map_err(|e| WebauthnError::VerificationFailed(format!("base64 decode error: {e}")))
 }
 
+// Tests exercise failure paths and invariants directly; unwrap/expect,
+// slicing, and panicking asserts are acceptable here — violations
+// surface as test failures, not production panics.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

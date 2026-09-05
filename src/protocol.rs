@@ -81,12 +81,20 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
         )));
     }
 
-    let rp_id_hash = auth_data[..32].to_vec();
-    let flags = auth_data[32];
-    let sign_count =
-        u32::from_be_bytes(auth_data[33..37].try_into().map_err(|_| {
-            WebauthnError::VerificationFailed("sign count bytes invalid".to_string())
-        })?);
+    // The length pre-check above makes these infallible, but `get` keeps
+    // the parser total on any future layout change (attacker-controlled
+    // input must never panic).
+    let truncated =
+        || WebauthnError::VerificationFailed("Authenticator data truncated".to_string());
+    let rp_id_hash = auth_data.get(..32).ok_or_else(truncated)?.to_vec();
+    let flags = *auth_data.get(32).ok_or_else(truncated)?;
+    let sign_count = u32::from_be_bytes(
+        auth_data
+            .get(33..37)
+            .ok_or_else(truncated)?
+            .try_into()
+            .map_err(|_| truncated())?,
+    );
 
     let mut offset = 37;
     let mut credential_id = None;
@@ -100,7 +108,9 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
         }
         offset += 16; // skip AAGUID
 
-        let cred_id_len = u16::from_be_bytes([auth_data[offset], auth_data[offset + 1]]) as usize;
+        let len_hi = *auth_data.get(offset).ok_or_else(truncated)?;
+        let len_lo = *auth_data.get(offset + 1).ok_or_else(truncated)?;
+        let cred_id_len = u16::from_be_bytes([len_hi, len_lo]) as usize;
         offset += 2;
 
         if auth_data.len() < offset + cred_id_len {
@@ -108,7 +118,12 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
                 "Attested credential data truncated (credential ID)".to_string(),
             ));
         }
-        credential_id = Some(auth_data[offset..offset + cred_id_len].to_vec());
+        credential_id = Some(
+            auth_data
+                .get(offset..offset + cred_id_len)
+                .ok_or_else(truncated)?
+                .to_vec(),
+        );
         offset += cred_id_len;
 
         if offset >= auth_data.len() {
@@ -116,7 +131,7 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
                 "Attested credential data truncated (public key)".to_string(),
             ));
         }
-        credential_public_key_cose = Some(auth_data[offset..].to_vec());
+        credential_public_key_cose = Some(auth_data.get(offset..).ok_or_else(truncated)?.to_vec());
     }
 
     Ok(AuthenticatorData {
@@ -430,6 +445,15 @@ pub fn verify_authentication(
     })
 }
 
+// Tests exercise failure paths and invariants directly; unwrap/expect,
+// slicing, and panicking asserts are acceptable here — violations
+// surface as test failures, not production panics.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

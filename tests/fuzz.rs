@@ -1,3 +1,12 @@
+// Integration/fuzz tests exercise hostile and malformed inputs directly;
+// unwrap/expect, slicing, and panicking asserts are the test signal here.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
+
 //! Security test pass: property/fuzz-style tests.
 //!
 //! Invariants under test:

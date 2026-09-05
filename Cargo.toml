@@ -29,3 +29,9 @@ proptest = "1"
 # Self dev-dependency: enables the `serde` feature for integration tests so
 # DTO (de)serialization can be exercised without forcing `serde` on consumers.
 webauthn-kit = { path = ".", features = ["serde"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+indexing_slicing = "deny"
+panic = "deny"
