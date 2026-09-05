@@ -108,3 +108,7 @@ add an attestation verifier on top.
 
 Dual-licensed under [MIT](LICENSE-MIT) or
 [Apache-2.0](LICENSE-APACHE), at your option.
+
+## Security
+
+Threat model: [THREAT-MODEL.md](THREAT-MODEL.md).
