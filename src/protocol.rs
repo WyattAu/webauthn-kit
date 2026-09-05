@@ -72,6 +72,9 @@ const ATTESTED_CREDENTIAL_PREFIX_LEN: usize = 18;
 ///   validate extensions and downstream CBOR parsing reads only the first
 ///   top-level map, so trailing extension data is ignored rather than
 ///   misinterpreted as key material.
+///
+/// # Requirements
+/// REQ-WA-100, REQ-WA-201
 fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, WebauthnError> {
     if auth_data.len() < AUTH_DATA_MIN_LEN {
         return Err(WebauthnError::VerificationFailed(format!(
@@ -145,6 +148,9 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
 
 /// Shared `clientDataJSON` validation: parse, challenge echo, ceremony type,
 /// origin allow-list, and optional `rpId` cross-check.
+///
+/// # Requirements
+/// REQ-WA-100, REQ-WA-101, REQ-WA-102, REQ-WA-103
 ///
 /// Returns the raw decoded client data bytes (needed for the auth signature).
 fn validate_client_data(
@@ -223,6 +229,10 @@ fn validate_client_data(
 ///   proves key possession, not device provenance (see crate docs).
 /// - Re-registration of an existing credential is rejected when
 ///   `existing_credential_id` matches the presented credential ID.
+///
+/// # Requirements
+/// REQ-WA-001, REQ-WA-101, REQ-WA-102, REQ-WA-103, REQ-WA-104, REQ-WA-105,
+/// REQ-WA-113, REQ-WA-117
 ///
 /// Returns the verified registration data to persist.
 pub fn verify_registration(
@@ -372,6 +382,10 @@ pub struct AuthenticationParams {
 ///   (ideally compare-and-swap) before considering the user logged in.
 /// - The UV flag is reported, not required; enforce your own policy on
 ///   [`AuthenticationResult::user_verified`].
+///
+/// # Requirements
+/// REQ-WA-002, REQ-WA-101, REQ-WA-102, REQ-WA-103, REQ-WA-104, REQ-WA-105,
+/// REQ-WA-106, REQ-WA-111, REQ-WA-114, REQ-WA-116
 ///
 /// Returns the verified authentication data.
 pub fn verify_authentication(
@@ -771,6 +785,42 @@ mod tests {
         let cose_key = build_cose_ec2_key(&[0xAA; 32], &[0xBB; 32]);
         let auth_data =
             build_auth_data_with_credential("localhost", FLAG_AT, 0, &credential_id, &cose_key);
+        let att_obj = build_attestation_object(&auth_data);
+
+        let challenge = generate_challenge_bytes();
+        let challenge_b64 = base64_encode_urlsafe(&challenge);
+
+        let client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": challenge_b64,
+            "origin": "http://localhost:8080",
+        });
+        let client_data_b64 = base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap());
+        let att_obj_b64 = base64_encode_urlsafe(&att_obj);
+
+        let result = verify_registration(
+            &challenge,
+            &client_data_b64,
+            &att_obj_b64,
+            "different",
+            "localhost",
+            &["http://localhost:8080".to_string()],
+        );
+        assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
+    }
+
+    /// REQ-WA-117: registration with UP set but the AT flag clear (no
+    /// attested credential data) must be rejected — a credential cannot be
+    /// registered without attested key material.
+    #[test]
+    fn registration_rejects_missing_at_flag() {
+        let auth_data = build_auth_data_with_credential(
+            "localhost",
+            FLAG_UP, // UP set, AT clear
+            0,
+            &[0x01],
+            &build_cose_ec2_key(&[0xAA; 32], &[0xBB; 32]),
+        );
         let att_obj = build_attestation_object(&auth_data);
 
         let challenge = generate_challenge_bytes();

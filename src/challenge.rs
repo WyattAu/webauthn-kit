@@ -69,6 +69,9 @@ fn unix_now() -> i64 {
 ///
 /// Returns `Ok(())` when the counter is fresh, [`WebauthnError::VerificationFailed`]
 /// when clone activity is suspected.
+///
+/// # Requirements
+/// REQ-WA-111, REQ-WA-112
 pub fn check_sign_count(current_sign_count: u32, new_sign_count: u32) -> Result<(), WebauthnError> {
     if current_sign_count != 0 && new_sign_count < current_sign_count {
         return Err(WebauthnError::VerificationFailed(format!(
@@ -101,6 +104,9 @@ struct AuthenticationChallenge {
 /// Construct with [`ChallengeStore::new`] or [`ChallengeStore::with_clock`]
 /// (the latter for deterministic expiry tests). See the module documentation
 /// for the threat model and storage contract.
+///
+/// # Requirements
+/// REQ-WA-108, REQ-WA-109, REQ-WA-115, REQ-WA-200
 pub struct ChallengeStore {
     /// Injectable clock (Unix seconds); defaults to the system clock.
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -194,6 +200,9 @@ impl ChallengeStore {
     ///   challenge can never be used twice (replay protection).
     /// - Expired challenges are rejected with [`WebauthnError::ChallengeExpired`].
     /// - Unknown IDs are rejected with [`WebauthnError::InvalidChallenge`].
+    ///
+    /// # Requirements
+    /// REQ-WA-108, REQ-WA-109
     pub fn consume_registration_challenge(
         &mut self,
         challenge_id: &str,
@@ -253,6 +262,9 @@ impl ChallengeStore {
     /// username, raw challenge bytes, and the allowed credential IDs.
     ///
     /// Same security semantics as [`ChallengeStore::consume_registration_challenge`].
+    ///
+    /// # Requirements
+    /// REQ-WA-108, REQ-WA-109
     pub fn consume_authentication_challenge(
         &mut self,
         challenge_id: &str,
@@ -287,6 +299,9 @@ impl ChallengeStore {
     /// Returns `(challenge_id, options)`; the challenge ID doubles as the
     /// Base64url challenge string and the returned options embed the same
     /// value. Store the pair via [`ChallengeStore::store_registration_challenge`].
+    ///
+    /// # Requirements
+    /// REQ-WA-005
     #[must_use]
     pub fn generate_registration_challenge(
         &self,
@@ -358,6 +373,9 @@ impl ChallengeStore {
     ///
     /// Returns `(challenge_id, options)` as in
     /// [`ChallengeStore::generate_registration_challenge`].
+    ///
+    /// # Requirements
+    /// REQ-WA-006
     #[must_use]
     pub fn generate_authentication_challenge(
         &self,

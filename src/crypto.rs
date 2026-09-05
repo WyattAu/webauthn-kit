@@ -121,6 +121,9 @@ pub fn cbor_map_entries(val: &ciborium::Value) -> Option<Vec<(i64, ciborium::Val
 /// - Coordinate/modulus lengths are not pre-validated here; `ring` rejects
 ///   invalid lengths during signature verification.
 ///
+/// # Requirements
+/// REQ-WA-003, REQ-WA-100, REQ-WA-107
+///
 /// Returns the COSE algorithm identifier and the parsed key components.
 pub fn parse_cose_key(cose_bytes: &[u8]) -> Result<(i32, CosePublicKey), WebauthnError> {
     use ciborium::Value;
@@ -207,6 +210,9 @@ pub fn parse_cose_key(cose_bytes: &[u8]) -> Result<(i32, CosePublicKey), Webauth
 ///   (`ECDSA_P256_SHA256_FIXED`, `RSA_PKCS1_2048_8192_SHA256`).
 /// - RSA keys smaller than 2048 bits are rejected by `ring`'s
 ///   `RSA_PKCS1_2048_8192_SHA256` parameters.
+///
+/// # Requirements
+/// REQ-WA-106, REQ-WA-107
 ///
 /// Returns `Ok(())` if and only if the signature verifies over `signed_data`.
 pub fn verify_cose_signature(
@@ -410,6 +416,9 @@ pub fn alg_to_name(alg: i32) -> &'static str {
 /// Challenges MUST come from a cryptographically secure source. If the OS
 /// entropy source fails, this function panics rather than emit predictable
 /// challenges (a failed CSPRNG is unrecoverable for security purposes).
+///
+/// # Requirements
+/// REQ-WA-110
 pub fn generate_challenge_bytes() -> Vec<u8> {
     use ring::rand::SecureRandom;
     let mut bytes = [0u8; 32];
@@ -433,6 +442,9 @@ pub fn base64_encode_urlsafe(data: &[u8]) -> String {
 /// padding is also accepted by the engine's forgiving handling).
 ///
 /// Returns [`WebauthnError::VerificationFailed`] on malformed input.
+///
+/// # Requirements
+/// REQ-WA-004, REQ-WA-118
 pub fn base64_decode_urlsafe(data: &str) -> Result<Vec<u8>, WebauthnError> {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -665,5 +677,29 @@ pub(crate) mod tests {
         assert_eq!(cbor_bytes(&v), Some(b"abc".to_vec()));
         let v = Value::Null;
         assert_eq!(cbor_bytes(&v), None);
+    }
+
+    /// REQ-WA-202: DER INTEGER encoding must handle the all-zero value
+    /// (single 0x00 octet), strip leading zeros, and prepend 0x00 for
+    /// high-bit-set values — all without panicking.
+    #[test]
+    fn der_integer_encoding_edge_cases() {
+        let mut buf = Vec::new();
+        RsaPublicKeyDer::encode_integer(&mut buf, &[0u8; 8]);
+        assert_eq!(buf, vec![0x02, 0x01, 0x00]);
+
+        buf.clear();
+        RsaPublicKeyDer::encode_integer(&mut buf, &[0x80, 0x00]);
+        assert_eq!(buf, vec![0x02, 0x03, 0x00, 0x80, 0x00]);
+
+        buf.clear();
+        RsaPublicKeyDer::encode_integer(&mut buf, &[0x00, 0x00, 0x7F]);
+        assert_eq!(buf, vec![0x02, 0x01, 0x7F]);
+
+        buf.clear();
+        // Empty modulus degenerates to a zero-length INTEGER (malformed DER);
+        // the encoder stays total and `ring` rejects the key at verify time.
+        RsaPublicKeyDer::encode_integer(&mut buf, &[]);
+        assert_eq!(buf, vec![0x02, 0x00]);
     }
 }
