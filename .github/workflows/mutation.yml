@@ -1,0 +1,37 @@
+# mutation baseline pending — expect hours; run locally first.
+#
+# webauthn-kit: weekly mutation testing with cargo-mutants (informational).
+# Policy: engineering-standards/MUTATION.md.
+#
+# Promote to gating when scores stabilize: once survivors are equivalent-only
+# (or zero) and the score is stable across 4 consecutive weekly runs, set
+# continue-on-error: false and add a score gate
+# (cargo mutants --all-features --fail-under <score>).
+name: mutation
+
+on:
+  schedule:
+    - cron: "0 3 * * 6" # weekly — Saturday 03:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Informational until the baseline is triaged.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants
+      - name: Run mutation tests
+        run: cargo mutants --all-features -o mutants-out
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out
+          path: mutants-out/
+          if-no-files-found: warn
