@@ -671,4 +671,31 @@ mod tests {
         let dbg = format!("{store:?}");
         assert!(!dbg.contains("secret-challenge"));
     }
+
+    /// `Default` must behave exactly like `new()` (an empty, usable store).
+    #[test]
+    fn default_store_is_usable() {
+        let mut store = ChallengeStore::default();
+        store.store_registration_challenge("ch", "alice", vec![0u8; 32]);
+        let (username, _) = store.consume_registration_challenge("ch", 300).unwrap();
+        assert_eq!(username, "alice");
+    }
+
+    /// An empty `allowed_algorithms` config falls back to advertising the
+    /// two implemented algorithms (ES256, RS256).
+    #[test]
+    fn empty_algorithms_fall_back_to_es256_rs256() {
+        let store = ChallengeStore::new();
+        let config = WebauthnConfig {
+            allowed_algorithms: vec![],
+            ..test_config()
+        };
+        let (_, options) = store.generate_registration_challenge(&config, "alice", "Alice", &[]);
+        let params: Vec<(i32, &str)> = options
+            .pub_key_cred_params
+            .iter()
+            .map(|p| (p.alg, p.type_.as_str()))
+            .collect();
+        assert_eq!(params, vec![(-7, "public-key"), (-257, "public-key")]);
+    }
 }

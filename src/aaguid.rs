@@ -321,4 +321,32 @@ mod tests {
         assert_eq!(samsung[7], 0x00);
         assert_eq!(&samsung[8..], &[0u8; 8]);
     }
+
+    /// Uppercase hex digits must be accepted (case-insensitive UUID text).
+    #[test]
+    fn uuid_accepts_uppercase_hex() {
+        let lower = uuid("cb69481e-8ff7-4039-93ec-0a2729a154a8");
+        let upper = uuid("CB69481E-8FF7-4039-93EC-0A2729A154A8");
+        assert_eq!(lower, upper);
+    }
+
+    /// Non-hex characters hit the const-eval panic (a compile error for
+    /// legitimate const use; a runtime panic otherwise).
+    #[test]
+    #[should_panic(expected = "invalid hex digit")]
+    fn uuid_rejects_non_hex_digit() {
+        let _ = uuid("zz69481e-8ff7-4039-93ec-0a2729a154a8");
+    }
+
+    #[test]
+    #[should_panic(expected = "not a 16-byte UUID")]
+    fn uuid_rejects_overlong_input() {
+        let _ = uuid("cb69481e-8ff7-4039-93ec-0a2729a154a8ff");
+    }
+
+    #[test]
+    #[should_panic(expected = "not a 16-byte UUID")]
+    fn uuid_rejects_empty_input() {
+        let _ = uuid("");
+    }
 }

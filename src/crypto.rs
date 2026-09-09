@@ -657,6 +657,8 @@ pub(crate) mod tests {
         assert_eq!(buf, vec![0x02, 0x01, 0x00]);
 
         buf.clear();
+        buf.clear();
+        // High-bit-set value: a necessary positive-marker 0x00 is prepended.
         RsaPublicKeyDer::encode_integer(&mut buf, &[0x80, 0x00]);
         assert_eq!(buf, vec![0x02, 0x03, 0x00, 0x80, 0x00]);
 
@@ -669,5 +671,250 @@ pub(crate) mod tests {
         // the encoder stays total and `ring` rejects the key at verify time.
         RsaPublicKeyDer::encode_integer(&mut buf, &[]);
         assert_eq!(buf, vec![0x02, 0x00]);
+    }
+
+    // ---- error paths of parse_cose_key / verify_cose_signature ----
+
+    /// Fixed 2048-bit RSA test key (PKCS#8 DER, base64). ring cannot
+    /// generate RSA keys, so the fixture is pre-generated with openssl.
+    pub(crate) const RSA_PKCS8_B64: &str = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCWaabvRsESS9rP70iKb473SMUwLEeKvSBGd2DcB4CgcjL2b69pqy7Mgp8ZXZlbJ96cK8y0OFZFKzFs5tLGVcG3JbkYSnFAgCHtW+k29N9B7XJe5k5K1p0piKQoeth8GX2QhYTNECABAU+FeKxAwjojTqVPH2oXNs7c7rQe5y03PYFqyrr0IyMt8QIXsjH7VVnTps/ojUQFqCPSqSi8Yb8BxokjtVd1K5IOlwYsfHLYBFefg3YTigQ5J/ZHZoL1oPRihRzPIEgDu4LmIT2Xp9Hzs9QV1DdLK2DxBcaMDyR/JEL1+LhnxD/HkaNdEDA/FA28JVl9GxHkHMEw3oyvEPDRAgMBAAECggEABS5GbbTGLwHQhkZQ/VOyXO9zZfa10CA2Mwx8Qu055PeKAdWpo74dsorykpvCuH0QZy4AXa9tvpwqQPytAzUuTZyjBM8rmh56YgPpwywpXx/1RzIvktb+5XtWDCmPDgHiwqOWsL7UG19sLxtk83tn0pIsPM7G3LMqlOQz7WHmZiH5UZmNKHcs5Gu5LxGoyMTN1weXk5Nx1OG63sUaXwFbaRv10Z+w6KBSpY9+fQDOXuet/5HwOl1cLXOcQeCXBsMDVUIU78+fsyqzZzIl7WL+rD1ulwCHcEFou3JxsFS+AuGXGAo6rIaFEOXR8g5vIF3g20zLCWYEzAByTUJa1hvnMQKBgQDS6gd8pbKi1cbg75s8JrNEFmMp3C2pAA42FvFQuigVy5p+92Lv3dLFM3a+UOz3l2DFwTQEUzm6tDKCCsMr5J2W8OZCQJ+QvvmI4ErN3X4h/HF6zcM9cZScMQN6/qe/jk6UMuzBFkenajbSvvvuKqlzV9zFmSV6+qh88CDTwiwCcwKBgQC2kMSYDFKPDsHqGgHOsaytHsi4lyUUGtIOVo+kvGWKYycr3V6q/sliMJ6v/E1SdVSJCDPyZbWc0fL9+PNhHrF5PGKS+HAjXsvQ+xOzXweByDiAZVmVNKxHmf9LFiAPPzUGIMxzwT9TU823E62aXybfgz7wCCFXx3Eh4sPCjN36qwKBgDKr2QqgQG+QjoxB5HiqD41/F2naJPoiMkfacTVk0/aQiNiSFKnuEBIikBefF59QNgasqROU7xyk6DGH5mXoMdgunhMytWMwDoFM6YvV99Swco7/WjWr0PlJaT2maqTByq0eIvUspiBZizxMd/g7NaSpajfq2C9YgxwpEKnvT2VzAoGAT6SL/wCxK3N2qNe7nh3ohIV/bveQ11pz9IlSlL0TVvG2bu5dlB8eX1VyhLd+S9CflkAb2U0Bk24LoTvvgJjRN2BeaFs1IFkEdSBzEbcNIVLlQy3zjKGz3nCR7IG0brJWQVwhlQXiyEkw3wMYotWLscohtLj3QsHg2rWATOkDFY0CgYEAuc5W0GMzucY940ok8VoIBrsD/FVtpfflsx/FDGUafBjvQ/2kLH7iyfZLX0jFTACiazLpxZESVcxEWYEr2Rz4KG7GGKYkppwMoH43Xk1L+zkR2ZeEHnzTzwLdVhczqGTs90V4HCYwLKzXqgJPZeH/42ngQuA/8dUrQ/9ofV68k4A=";
+
+    /// Decode a DER TLV at `i`; returns `(content, rest)`.
+    fn der_tlv(i: &[u8]) -> (&[u8], &[u8]) {
+        let l0 = *i.get(1).unwrap();
+        let (header, len) = if l0 < 0x80 {
+            (2usize, l0 as usize)
+        } else {
+            let n = (l0 & 0x7F) as usize;
+            let mut len = 0usize;
+            for b in &i[2..2 + n] {
+                len = (len << 8) | *b as usize;
+            }
+            (2 + n, len)
+        };
+        (&i[header..header + len], &i[header + len..])
+    }
+
+    /// (modulus, exponent, PKCS#8 DER) for the fixed RSA test key.
+    pub(crate) fn rsa_test_material() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use base64::Engine as _;
+        let pkcs8 = base64::engine::general_purpose::STANDARD
+            .decode(RSA_PKCS8_B64)
+            .unwrap();
+        // PrivateKeyInfo ::= SEQ { version, algorithm, OCTET STRING {
+        //   RSAPrivateKey ::= SEQ { version, n, e, ... } } }
+        let (info, _) = der_tlv(&pkcs8);
+        let (_version, rest) = der_tlv(info);
+        let (_algorithm, rest) = der_tlv(rest);
+        let (octet, _) = der_tlv(rest);
+        let (rsa_key, _) = der_tlv(octet);
+        let (_version, rest) = der_tlv(rsa_key);
+        let (n, rest) = der_tlv(rest);
+        let (e, _) = der_tlv(rest);
+        (n.to_vec(), e.to_vec(), pkcs8)
+    }
+
+    /// Minimal-encoding SPKI for the fixed RSA test key, as ring's RSA
+    /// verifier requires (see `RsaPublicKeyDer::encode_integer`).
+    pub(crate) fn rsa_test_spki() -> Vec<u8> {
+        let (n, e, _) = rsa_test_material();
+        RsaPublicKeyDer { n: &n, e: &e }.to_der().unwrap()
+    }
+
+    fn cose_key_from(entries: Vec<(i64, ciborium::Value)>) -> Vec<u8> {
+        use ciborium::Value;
+        let map: Vec<(Value, Value)> = entries
+            .into_iter()
+            .map(|(k, v)| (Value::Integer(k.into()), v))
+            .collect();
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn parse_cose_key_garbage_cbor_is_error() {
+        // 0xFF is a reserved CBOR major type: parse must fail, never panic.
+        let result = parse_cose_key(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
+    }
+
+    #[test]
+    fn parse_cose_key_ec2_missing_crv() {
+        let buf = cose_key_from(vec![
+            (1, ciborium::Value::Integer(2.into())),
+            (2, ciborium::Value::Integer((-7).into())),
+            (-2, ciborium::Value::Bytes(vec![0xAA; 32])),
+            (-3, ciborium::Value::Bytes(vec![0xBB; 32])),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&buf),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn parse_cose_key_ec2_wrong_curve_is_unsupported() {
+        let buf = cose_key_from(vec![
+            (1, ciborium::Value::Integer(2.into())),
+            (2, ciborium::Value::Integer((-7).into())),
+            (-1, ciborium::Value::Integer(3.into())), // P-384, not P-256
+            (-2, ciborium::Value::Bytes(vec![0xAA; 48])),
+            (-3, ciborium::Value::Bytes(vec![0xBB; 48])),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&buf),
+            Err(WebauthnError::UnsupportedAlgorithm(-7))
+        ));
+    }
+
+    #[test]
+    fn parse_cose_key_ec2_missing_coordinates() {
+        let kty_alg = vec![
+            (1, ciborium::Value::Integer(2.into())),
+            (2, ciborium::Value::Integer((-7).into())),
+            (-1, ciborium::Value::Integer(1.into())),
+        ];
+        let missing_x = cose_key_from(
+            [
+                kty_alg.clone(),
+                vec![(-3, ciborium::Value::Bytes(vec![0xBB; 32]))],
+            ]
+            .concat(),
+        );
+        assert!(matches!(
+            parse_cose_key(&missing_x),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+
+        let missing_y =
+            cose_key_from([kty_alg, vec![(-2, ciborium::Value::Bytes(vec![0xAA; 32]))]].concat());
+        assert!(matches!(
+            parse_cose_key(&missing_y),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn parse_cose_key_rsa_missing_modulus_or_exponent() {
+        let missing_n = cose_key_from(vec![
+            (1, ciborium::Value::Integer(3.into())),
+            (2, ciborium::Value::Integer((-257).into())),
+            (-2, ciborium::Value::Bytes(vec![0x01, 0x00, 0x01])),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&missing_n),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+
+        let missing_e = cose_key_from(vec![
+            (1, ciborium::Value::Integer(3.into())),
+            (2, ciborium::Value::Integer((-257).into())),
+            (-1, ciborium::Value::Bytes(vec![0xAA; 256])),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&missing_e),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn parse_cose_key_unknown_kty_is_error() {
+        let buf = cose_key_from(vec![
+            (1, ciborium::Value::Integer(99.into())),
+            (2, ciborium::Value::Integer((-7).into())),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&buf),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn cbor_map_entries_rejects_non_integer_keys() {
+        use ciborium::Value;
+        let map = Value::Map(vec![(
+            Value::Text("kty".to_string()),
+            Value::Integer(2.into()),
+        )]);
+        assert!(cbor_map_entries(&map).is_none());
+    }
+
+    #[test]
+    fn verify_rs256_with_ec_key_is_rejected() {
+        let key = CosePublicKey::Ec2 {
+            x: vec![0xAA; 32],
+            y: vec![0xBB; 32],
+        };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_RS256, &key, b"data", &[0u8; 256]),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn verify_cose_signature_unknown_alg_is_rejected() {
+        let key = CosePublicKey::Ec2 {
+            x: vec![0xAA; 32],
+            y: vec![0xBB; 32],
+        };
+        assert!(matches!(
+            verify_cose_signature(-47, &key, b"data", &[0u8; 64]),
+            Err(WebauthnError::UnsupportedAlgorithm(-47))
+        ));
+    }
+
+    #[test]
+    fn alg_to_name_covers_known_and_unknown() {
+        assert_eq!(alg_to_name(COSE_ALG_ES256), "ES256");
+        assert_eq!(alg_to_name(COSE_ALG_RS256), "RS256");
+        assert_eq!(alg_to_name(0), "unknown");
+    }
+
+    /// RS256 end-to-end: a real 2048-bit RSA signature verifies through the
+    /// RS256 arm (PKCS#1 v1.5 + SHA-256), a tampered message fails closed.
+    #[test]
+    fn verify_rs256_real_signature_roundtrip() {
+        use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
+
+        let (n, e, pkcs8) = rsa_test_material();
+        let rsa = RsaKeyPair::from_pkcs8(&pkcs8).unwrap();
+        let modulus_len = rsa.public().modulus_len();
+        assert_eq!(modulus_len, 256);
+
+        // Sign with ring, verify through the COSE RS256 arm.
+        let rng = ring::rand::SystemRandom::new();
+        let message = b"webauthn-kit rs256 vector";
+        let mut signature = vec![0u8; modulus_len];
+        rsa.sign(&RSA_PKCS1_SHA256, &rng, message, &mut signature)
+            .unwrap();
+
+        let key = CosePublicKey::Rsa { n, e };
+        assert!(verify_cose_signature(COSE_ALG_RS256, &key, message, &signature).is_ok());
+
+        // One flipped message byte must fail closed.
+        let mut tampered = *message;
+        tampered[0] ^= 0x01;
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_RS256, &key, &tampered, &signature),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+    }
+
+    /// DER long-form length encoding: a 128-byte modulus forces both the
+    /// standalone length encoder and the in-place header writer through
+    /// their `0x81` (single length byte) branches.
+    #[test]
+    fn der_long_form_length_encoding() {
+        let n = [0x77u8; 128];
+        let e = [0x01, 0x00, 0x01];
+        let der = RsaPublicKeyDer { n: &n, e: &e }.to_der().unwrap();
+
+        // RSAPublicKey: outer SEQ header uses the 0x81 long form.
+        assert_eq!(der[0], 0x30);
+        assert_eq!(der[1], 0x81);
+        assert_eq!(der[2] as usize + 3, der.len());
+        // The 128-byte INTEGER itself also uses the long form.
+        assert!(der.windows(3).any(|w| w == [0x02, 0x81, 0x80]));
     }
 }

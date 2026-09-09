@@ -1418,4 +1418,186 @@ mod tests {
             Err(WebauthnError::SignatureVerificationFailed)
         ));
     }
+
+    /// Build a fully valid ES256 registration response. `rp_id_field`
+    /// injects a matching `rpId` into clientDataJSON; `extra_att_key`
+    /// appends an unknown key to the attestation object (must be ignored).
+    fn valid_registration(rp_id_field: bool, extra_att_key: bool) -> (Vec<u8>, String, String) {
+        use ring::signature::EcdsaKeyPair;
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+                .unwrap();
+        let key_pair = EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8.as_ref(),
+            &rng,
+        )
+        .unwrap();
+        let pub_bytes = key_pair.public_key().as_ref().to_vec();
+        let cose_key = build_cose_ec2_key(&pub_bytes[1..33], &pub_bytes[33..65]);
+
+        let credential_id = vec![0x42u8; 8];
+        let auth_data = build_auth_data_with_credential(
+            "localhost",
+            FLAG_UP | FLAG_AT,
+            0,
+            &credential_id,
+            &cose_key,
+        );
+
+        let challenge = generate_challenge_bytes();
+        let challenge_b64 = base64_encode_urlsafe(&challenge);
+
+        let mut client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": challenge_b64,
+            "origin": "http://localhost:8080",
+        });
+        if rp_id_field {
+            client_data["rpId"] = serde_json::json!("localhost");
+        }
+        let client_data_b64 = base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap());
+
+        let mut entries = vec![
+            (
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Text("none".to_string()),
+            ),
+            (
+                ciborium::Value::Integer(2.into()),
+                ciborium::Value::Bytes(auth_data),
+            ),
+        ];
+        if extra_att_key {
+            entries.push((
+                ciborium::Value::Integer(9.into()),
+                ciborium::Value::Bool(true),
+            ));
+        }
+        entries.push((
+            ciborium::Value::Integer(3.into()),
+            ciborium::Value::Map(vec![]),
+        ));
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(entries), &mut buf).unwrap();
+
+        (challenge, client_data_b64, base64_encode_urlsafe(&buf))
+    }
+
+    /// An explicit `rpId` field matching the RP must be accepted, and
+    /// unknown attestation-object keys must be ignored.
+    #[test]
+    fn registration_accepts_rpid_field_and_unknown_keys() {
+        let (challenge, client_data_b64, att_obj_b64) = valid_registration(true, true);
+        let result = verify_registration(
+            &challenge,
+            &client_data_b64,
+            &att_obj_b64,
+            "",
+            "localhost",
+            &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(result.attestation_format, "none");
+        assert_eq!(result.credential_id, base64_encode_urlsafe(&[0x42u8; 8]));
+    }
+
+    #[test]
+    fn registration_rejects_missing_type_in_client_data() {
+        let challenge = generate_challenge_bytes();
+        let client_data = serde_json::json!({
+            "challenge": base64_encode_urlsafe(&challenge),
+            "origin": "http://localhost:8080",
+        });
+        let result = verify_registration(
+            &challenge,
+            &base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap()),
+            &base64_encode_urlsafe(&[0xFF; 8]),
+            "",
+            "localhost",
+            &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
+        );
+        assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
+    }
+
+    #[test]
+    fn registration_rejects_missing_origin_in_client_data() {
+        let challenge = generate_challenge_bytes();
+        let client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": base64_encode_urlsafe(&challenge),
+        });
+        let result = verify_registration(
+            &challenge,
+            &base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap()),
+            &base64_encode_urlsafe(&[0xFF; 8]),
+            "",
+            "localhost",
+            &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
+        );
+        assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
+    }
+
+    /// Attested credential data that ends right after the credential ID
+    /// (no COSE key bytes) must be rejected as truncated, never sliced
+    /// out of bounds.
+    #[test]
+    fn parse_auth_data_rejects_truncated_public_key() {
+        let mut auth_data = vec![0u8; 37 + 16 + 2 + 2];
+        auth_data[32] = FLAG_UP | FLAG_AT;
+        auth_data[53..55].copy_from_slice(&2u16.to_be_bytes());
+        let result = parse_authenticator_data(&auth_data);
+        assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
+    }
+
+    /// A malformed attestation *statement* (packed without `alg`) surfaces
+    /// as an `AttestationError` through the registration entry point.
+    #[test]
+    fn registration_propagates_attestation_statement_errors() {
+        let auth_data = build_auth_data_with_credential(
+            "localhost",
+            FLAG_UP | FLAG_AT,
+            0,
+            &[0x01],
+            &build_cose_ec2_key(&[0xAA; 32], &[0xBB; 32]),
+        );
+        let entries = vec![
+            (
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Text("packed".to_string()),
+            ),
+            (
+                ciborium::Value::Integer(2.into()),
+                ciborium::Value::Bytes(auth_data),
+            ),
+            (
+                ciborium::Value::Integer(3.into()),
+                ciborium::Value::Map(vec![]), // packed attStmt without alg/sig
+            ),
+        ];
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(entries), &mut buf).unwrap();
+
+        let challenge = generate_challenge_bytes();
+        let client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": base64_encode_urlsafe(&challenge),
+            "origin": "http://localhost:8080",
+        });
+        let result = verify_registration(
+            &challenge,
+            &base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap()),
+            &base64_encode_urlsafe(&buf),
+            "",
+            "localhost",
+            &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
+        );
+        assert!(matches!(result, Err(WebauthnError::AttestationError(_))));
+    }
 }
