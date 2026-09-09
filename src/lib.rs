@@ -8,8 +8,11 @@
 //! ## What it does
 //!
 //! - Full CTAP2 authenticator data parsing (rpIdHash, flags, signCount,
-//!   attested credential data) — [`protocol`]
+//!   attested credential data incl. AAGUID) — [`protocol`]
 //! - `verify_registration` / `verify_authentication` ceremonies — [`protocol`]
+//! - Attestation statement verification for the `none`, `packed` (self- and
+//!   x5c-based basic/AttCA), and `fido-u2f` formats, with X.509 chain
+//!   verification against caller-configured trust anchors — [`attestation`]
 //! - COSE public key parsing and signature verification for **ES256**
 //!   (ECDSA P-256 + SHA-256) and **RS256** (RSA PKCS#1 v1.5 + SHA-256) via
 //!   `ring` — [`crypto`]
@@ -22,8 +25,8 @@
 //!
 //! ```
 //! use webauthn_kit::{
-//!     check_sign_count, verify_authentication, verify_registration, AuthenticationParams,
-//!     ChallengeStore, WebauthnConfig,
+//!     check_sign_count, verify_authentication, verify_registration, AttestationPolicy,
+//!     AuthenticationParams, ChallengeStore, WebauthnConfig,
 //! };
 //!
 //! let config = WebauthnConfig {
@@ -32,6 +35,7 @@
 //!     rp_origins: vec!["https://example.com".into()],
 //!     allowed_algorithms: vec![-7, -257],
 //!     challenge_timeout_secs: 300,
+//!     attestation: AttestationPolicy::default(),
 //! };
 //!
 //! // 1. Issue a challenge (single-use; store the (id, bytes) pair).
@@ -42,7 +46,9 @@
 //!
 //! // 2. Verify a registration response (see tests/vectors.rs for a full
 //! //    roundtrip with a synthetic keypair).
-//! // let result = verify_registration(&challenge, &client_data_json_b64, &attestation_object_b64, "", &config.rp_id, &config.rp_origins)?;
+//! // let result = verify_registration(&challenge, &client_data_json_b64,
+//! //     &attestation_object_b64, "", &config.rp_id, &config.rp_origins,
+//! //     &config.attestation)?;
 //!
 //! // 3. Verify an assertion; persist result.new_sign_count afterwards.
 //! // let result = verify_authentication(&AuthenticationParams { ... })?;
@@ -71,13 +77,15 @@
 //!   panicking (property/fuzz-tested in `tests/fuzz.rs`).
 //! - Challenge bytes are 32 bytes from the OS CSPRNG; consumption is
 //!   single-use and freshness-bounded.
-//! - **Attestation is parsed, not verified**: the attestation object is
-//!   decoded to extract authenticator data, but attestation statement
-//!   signatures are not checked. Supported attestation formats: any `fmt`
-//!   value is tolerated ("none", "packed", "fido-u2f", ...) and recorded
-//!   informationally — registration proves key possession, not device
-//!   provenance. If you need verified device provenance, add an attestation
-//!   verifier on top.
+//! - **Attestation is verified for `none`, `packed`, and `fido-u2f`**;
+//!   unknown formats are rejected unless the
+//!   `AttestationPolicy::allow_unknown_formats` escape hatch is set
+//!   (trust-weakening). Provenance claims are bounded by the configured
+//!   trust anchors: with none configured, unanchored certificate chains are
+//!   accepted but flagged (`TrustLevel::BasicAtt` + warning) and must be
+//!   treated as self-attested. Only `TrustLevel::AttCa` attests device
+//!   provenance. Other formats (`android-key`, `tpm`, ...) are tranche-2
+//!   work — see [`attestation`].
 //! - Supported algorithms: ES256 (COSE -7) and RS256 (COSE -257) only.
 //!   Other algorithms (including OKP/Ed25519) are rejected with
 //!   [`WebauthnError::UnsupportedAlgorithm`].
@@ -90,6 +98,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod aaguid;
+pub mod attestation;
 pub mod challenge;
 pub mod config;
 pub mod credential;
@@ -97,6 +107,10 @@ pub mod crypto;
 pub mod error;
 pub mod protocol;
 
+pub use aaguid::known_aaguid;
+pub use attestation::{
+    verify_attestation, AttestationFormat, AttestationPolicy, AttestationResult, TrustLevel,
+};
 pub use challenge::{check_sign_count, ChallengeStore};
 pub use config::WebauthnConfig;
 pub use credential::{

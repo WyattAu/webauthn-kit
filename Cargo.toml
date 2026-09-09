@@ -18,6 +18,7 @@ serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+x509-parser = { version = "0.18.1", default-features = false }
 
 [features]
 default = ["std"]
@@ -26,6 +27,7 @@ serde = ["dep:serde"]
 
 [dev-dependencies]
 proptest = "1"
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
 # Self dev-dependency: enables the `serde` feature for integration tests so
 # DTO (de)serialization can be exercised without forcing `serde` on consumers.
 webauthn-kit = { path = ".", features = ["serde"] }

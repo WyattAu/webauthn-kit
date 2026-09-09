@@ -1,5 +1,7 @@
 //! Relying-party configuration.
 
+use crate::attestation::AttestationPolicy;
+
 /// `WebAuthn` relying party configuration.
 ///
 /// This is the kit-local replacement for any application-specific auth config
@@ -21,6 +23,9 @@
 ///   implements ES256 (-7) and RS256 (-257) only; other algorithms are
 ///   rejected with [`crate::WebauthnError::UnsupportedAlgorithm`] regardless
 ///   of this setting.
+/// - `attestation` governs attestation statement verification during
+///   registration; see [`AttestationPolicy`] for the trust implications of
+///   empty `trust_anchors` and `allow_unknown_formats`.
 #[derive(Debug, Clone)]
 pub struct WebauthnConfig {
     /// Relying party ID (effective domain, e.g. `"example.com"`).
@@ -40,6 +45,10 @@ pub struct WebauthnConfig {
     ///
     /// Challenges older than this are rejected on consumption.
     pub challenge_timeout_secs: u64,
+    /// Attestation verification policy applied by
+    /// [`crate::verify_registration`] (default: strict — unknown formats
+    /// rejected, no trust anchors configured).
+    pub attestation: AttestationPolicy,
 }
 
 impl Default for WebauthnConfig {
@@ -54,6 +63,7 @@ impl Default for WebauthnConfig {
             rp_origins: vec!["http://localhost:8080".to_string()],
             allowed_algorithms: vec![-7, -257],
             challenge_timeout_secs: 300,
+            attestation: AttestationPolicy::default(),
         }
     }
 }

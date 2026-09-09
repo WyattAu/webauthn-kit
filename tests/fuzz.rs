@@ -21,7 +21,7 @@ use proptest::prelude::*;
 
 use webauthn_kit::{
     base64_encode_urlsafe, check_sign_count, verify_authentication, verify_registration,
-    AuthenticationParams, ChallengeStore, WebauthnConfig, WebauthnError,
+    AttestationPolicy, AuthenticationParams, ChallengeStore, WebauthnConfig, WebauthnError,
 };
 
 const RP_ID: &str = "localhost";
@@ -62,6 +62,7 @@ proptest! {
             "",
             RP_ID,
             &origins(),
+            &AttestationPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -93,6 +94,7 @@ proptest! {
             "",
             RP_ID,
             &origins(),
+            &AttestationPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -178,6 +180,7 @@ proptest! {
             "",
             RP_ID,
             &origins(),
+            &AttestationPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -202,6 +205,7 @@ proptest! {
             "",
             RP_ID,
             &origins(),
+            &AttestationPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -295,6 +299,7 @@ fn origin_mismatch_rejected_and_rp_hash_mismatch_rejected() {
         "",
         RP_ID,
         &origins(),
+        &AttestationPolicy::default(),
     );
     assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
 

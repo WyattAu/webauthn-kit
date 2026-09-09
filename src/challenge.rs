@@ -423,6 +423,7 @@ mod tests {
             rp_name: "Kit Test".to_string(),
             rp_origins: vec!["http://localhost:8080".to_string()],
             allowed_algorithms: vec![-7, -257],
+            attestation: crate::attestation::AttestationPolicy::default(),
             challenge_timeout_secs: 300,
         }
     }
@@ -574,6 +575,7 @@ mod tests {
             rp_name: "Custom App".to_string(),
             rp_origins: vec!["https://custom.example.com".to_string()],
             allowed_algorithms: vec![-7, -257],
+            attestation: crate::attestation::AttestationPolicy::default(),
             challenge_timeout_secs: 600,
         };
         let (_, options) = store.generate_registration_challenge(
@@ -596,6 +598,7 @@ mod tests {
             rp_name: "Custom App".to_string(),
             rp_origins: vec![],
             allowed_algorithms: vec![],
+            attestation: crate::attestation::AttestationPolicy::default(),
             challenge_timeout_secs: 120,
         };
         let (_, options) = store

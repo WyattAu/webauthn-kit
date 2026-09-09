@@ -42,10 +42,12 @@ pub enum WebauthnError {
     /// `ring` rejected the cryptographic signature.
     #[error("Signature verification failed")]
     SignatureVerificationFailed,
-    /// The attestation object could not be parsed.
+    /// The attestation object or statement could not be parsed, or
+    /// attestation verification failed for a non-signature reason
+    /// (unsupported/unknown format, untrusted chain, expired certificate,
+    /// AAGUID extension mismatch, ...).
     ///
-    /// Note: this library parses the attestation object to extract
-    /// `authData` but does **not** verify attestation statement signatures.
+    /// Signature failures surface as [`WebauthnError::SignatureVerificationFailed`].
     #[error("Attestation error: {0}")]
     AttestationError(String),
 }

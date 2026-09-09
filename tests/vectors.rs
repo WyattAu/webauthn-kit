@@ -19,7 +19,8 @@ use sha2::Digest;
 use webauthn_kit::crypto::{parse_cose_key, verify_cose_signature, COSE_ALG_RS256};
 use webauthn_kit::{
     base64_decode_urlsafe, base64_encode_urlsafe, check_sign_count, verify_authentication,
-    verify_registration, AuthenticationParams, ChallengeStore, WebauthnConfig, WebauthnError,
+    verify_registration, AttestationPolicy, AuthenticationParams, ChallengeStore, WebauthnConfig,
+    WebauthnError,
 };
 
 const RP_ID: &str = "localhost";
@@ -122,6 +123,7 @@ fn registration_authentication_roundtrip_es256() {
         rp_name: "Kit".to_string(),
         rp_origins: origins(),
         allowed_algorithms: vec![-7, -257],
+        attestation: webauthn_kit::attestation::AttestationPolicy::default(),
         challenge_timeout_secs: 300,
     };
 
@@ -153,6 +155,7 @@ fn registration_authentication_roundtrip_es256() {
         "", // no existing credential
         RP_ID,
         &origins(),
+        &AttestationPolicy::default(),
     )
     .expect("registration must verify");
 
@@ -190,6 +193,7 @@ fn registration_authentication_roundtrip_es256() {
         &registration.credential_id,
         RP_ID,
         &origins(),
+        &AttestationPolicy::default(),
     );
     assert!(matches!(
         duplicate,
@@ -317,6 +321,7 @@ fn fixed_vector_challenge_echo() {
         "",
         RP_ID,
         &origins(),
+        &AttestationPolicy::default(),
     );
     // Must fail on attestation (challenge/origin/type all OK), i.e. AttestationError.
     assert!(matches!(result, Err(WebauthnError::AttestationError(_))));
@@ -336,6 +341,7 @@ fn fixed_vector_challenge_echo() {
         "",
         RP_ID,
         &origins(),
+        &AttestationPolicy::default(),
     );
     assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
 }
@@ -349,6 +355,7 @@ fn options_serde_roundtrip() {
         rp_name: "Example".to_string(),
         rp_origins: vec!["https://example.com".to_string()],
         allowed_algorithms: vec![-7, -257],
+        attestation: webauthn_kit::attestation::AttestationPolicy::default(),
         challenge_timeout_secs: 300,
     };
     let store = ChallengeStore::new();

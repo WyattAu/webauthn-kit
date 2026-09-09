@@ -40,7 +40,9 @@ pub struct WebauthnCredential {
     pub last_used_at: i64,
     /// Attestation format (e.g. "none", "packed", "fido-u2f", "android-key").
     ///
-    /// Informational only: this kit does not verify attestation statements.
+    /// Raw informational string; see the registration result's
+    /// [`crate::attestation::AttestationResult`] for the verified trust
+    /// level.
     pub attestation_format: String,
     /// Whether user verification (biometrics/PIN) was performed at registration.
     pub user_verified: bool,
@@ -203,8 +205,20 @@ pub struct RegistrationResult {
     pub credential_id: String,
     /// Device name (from client or auto-generated).
     pub device_name: String,
-    /// Attestation format used (informational; not verified).
+    /// Raw attestation format string from the attestation object (e.g.
+    /// "none", "packed", "fido-u2f").
     pub attestation_format: String,
+    /// Verified attestation details (format, AAGUID, trust level, warnings).
+    ///
+    /// # Security note
+    ///
+    /// Only [`crate::attestation::TrustLevel::AttCa`] (a chain terminating
+    /// at a configured trust anchor) attests device provenance;
+    /// [`crate::attestation::TrustLevel::BasicAtt`] and
+    /// [`crate::attestation::TrustLevel::SelfAttested`] establish key
+    /// possession only. Inspect [`crate::attestation::AttestationResult::warnings`]
+    /// for trust-weakening flags.
+    pub attestation: crate::attestation::AttestationResult,
     /// Whether user verification was performed.
     pub user_verified: bool,
 }

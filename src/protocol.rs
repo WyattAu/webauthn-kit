@@ -17,10 +17,15 @@
 //! - `challenge_bytes` MUST come from a single-use, server-side source (see
 //!   [`crate::ChallengeStore`]); this module only checks that the client
 //!   echoed them inside `clientDataJSON`.
-//! - Attestation statement signatures are **not** verified (attestation is
-//!   parsed but ignored); the registration ceremony establishes key
-//!   possession, not device provenance.
+//! - Attestation statements are verified for the `none`, `packed`, and
+//!   `fido-u2f` formats ([`crate::attestation`]); unknown formats are
+//!   rejected unless the caller opts out via
+//!   [`AttestationPolicy::allow_unknown_formats`]. Trust conveyed by an
+//!   attestation is bounded by the configured trust anchors — see
+//!   [`crate::attestation::AttestationPolicy`] before relying on
+//!   provenance.
 
+use crate::attestation::{verify_attestation, AttestationPolicy};
 use crate::challenge::check_sign_count;
 use crate::credential::{AuthenticationResult, RegistrationResult};
 use crate::crypto::{
@@ -42,6 +47,8 @@ struct AuthenticatorData {
     credential_public_key_cose: Option<Vec<u8>>,
     /// Raw credential ID (present when AT flag set).
     credential_id: Option<Vec<u8>>,
+    /// 16-byte AAGUID (present when AT flag set).
+    aaguid: Option<[u8; 16]>,
 }
 
 /// Authenticator data flag bit: User Present.
@@ -102,6 +109,7 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
     let mut offset = 37;
     let mut credential_id = None;
     let mut credential_public_key_cose = None;
+    let mut aaguid = None;
 
     if flags & FLAG_AT != 0 {
         if auth_data.len() < offset + ATTESTED_CREDENTIAL_PREFIX_LEN {
@@ -109,7 +117,13 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
                 "Attested credential data truncated (AAGUID + length)".to_string(),
             ));
         }
-        offset += 16; // skip AAGUID
+        let aaguid_bytes = auth_data
+            .get(offset..offset + 16)
+            .ok_or_else(truncated)?
+            .to_vec();
+        let aaguid_arr: [u8; 16] = aaguid_bytes.try_into().map_err(|_| truncated())?;
+        aaguid = Some(aaguid_arr);
+        offset += 16;
 
         let len_hi = *auth_data.get(offset).ok_or_else(truncated)?;
         let len_lo = *auth_data.get(offset + 1).ok_or_else(truncated)?;
@@ -143,6 +157,7 @@ fn parse_authenticator_data(auth_data: &[u8]) -> Result<AuthenticatorData, Webau
         sign_count,
         credential_public_key_cose,
         credential_id,
+        aaguid,
     })
 }
 
@@ -213,7 +228,8 @@ fn validate_client_data(
     Ok(client_data_bytes)
 }
 
-/// Verify a registration response with full CTAP2/COSE verification.
+/// Verify a registration response with full CTAP2/COSE verification and
+/// attestation statement verification.
 ///
 /// # Security notes / threat assumptions
 ///
@@ -225,16 +241,24 @@ fn validate_client_data(
 ///   credential to this RP.
 /// - The UP and AT flags are mandatory; the UV flag is reported (not
 ///   required) so the caller can enforce its own user-verification policy.
-/// - Attestation statements are parsed but **not** verified — registration
-///   proves key possession, not device provenance (see crate docs).
+/// - Attestation statements are verified for the `none`, `packed`, and
+///   `fido-u2f` formats; unknown formats are rejected unless
+///   [`AttestationPolicy::allow_unknown_formats`] is set (trust-weakening).
+///   The provenance conveyed by a verified attestation is bounded by
+///   `attestation.trust_level` in the result — see
+///   [`crate::attestation`]: only [`crate::attestation::TrustLevel::AttCa`]
+///   (chain terminating at a configured trust anchor) attests device
+///   provenance.
 /// - Re-registration of an existing credential is rejected when
 ///   `existing_credential_id` matches the presented credential ID.
 ///
 /// # Requirements
 /// REQ-WA-001, REQ-WA-101, REQ-WA-102, REQ-WA-103, REQ-WA-104, REQ-WA-105,
-/// REQ-WA-113, REQ-WA-117
+/// REQ-WA-113, REQ-WA-117, REQ-WA-119, REQ-WA-120, REQ-WA-121, REQ-WA-123,
+/// REQ-WA-124, REQ-WA-126
 ///
 /// Returns the verified registration data to persist.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_registration(
     challenge_bytes: &[u8],
     client_data_json_b64: &str,
@@ -242,8 +266,9 @@ pub fn verify_registration(
     existing_credential_id: &str,
     rp_id: &str,
     rp_origins: &[String],
+    attestation_policy: &AttestationPolicy,
 ) -> Result<RegistrationResult, WebauthnError> {
-    validate_client_data(
+    let client_data_bytes = validate_client_data(
         client_data_json_b64,
         challenge_bytes,
         "webauthn.create",
@@ -263,6 +288,7 @@ pub fn verify_registration(
 
     let mut fmt: Option<String> = None;
     let mut auth_data_bytes: Option<Vec<u8>> = None;
+    let mut att_stmt: Option<ciborium::Value> = None;
 
     for (key, val) in &attestation_entries {
         match *key {
@@ -275,6 +301,9 @@ pub fn verify_registration(
                 if let Some(b) = cbor_bytes(val) {
                     auth_data_bytes = Some(b);
                 }
+            }
+            3 => {
+                att_stmt = Some(val.clone());
             }
             _ => {}
         }
@@ -321,7 +350,24 @@ pub fn verify_registration(
         WebauthnError::VerificationFailed("no public key in attested data".to_string())
     })?;
 
-    let (alg, _cose_key) = parse_cose_key(&public_key_cose)?;
+    let (alg, cose_key) = parse_cose_key(&public_key_cose)?;
+
+    // Attestation verification (REQ-WA-119..): dispatch on `fmt` and verify
+    // the statement per the caller's policy. Fails closed on tampered
+    // signatures, unknown formats (unless opted out), and policy violations.
+    let client_data_hash = sha2::Sha256::digest(&client_data_bytes).to_vec();
+    let aaguid = auth_data.aaguid.unwrap_or([0u8; 16]);
+    let attestation = verify_attestation(
+        &fmt,
+        att_stmt.as_ref(),
+        &auth_data_bytes,
+        &client_data_hash,
+        &credential_id,
+        alg,
+        &cose_key,
+        aaguid,
+        attestation_policy,
+    )?;
 
     let user_verified = auth_data.flags & FLAG_UV != 0;
 
@@ -329,6 +375,7 @@ pub fn verify_registration(
         credential_id: credential_id_b64,
         device_name: format!("WebAuthn ({})", alg_to_name(alg)),
         attestation_format: fmt,
+        attestation,
         user_verified,
     })
 }
@@ -604,6 +651,7 @@ mod tests {
             "different-id",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         )
         .unwrap();
 
@@ -640,6 +688,7 @@ mod tests {
             "different",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
     }
@@ -673,6 +722,7 @@ mod tests {
             "different",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
     }
@@ -706,6 +756,7 @@ mod tests {
             "different",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
     }
@@ -740,6 +791,7 @@ mod tests {
             &cred_id_b64,
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::DuplicateCredential(_))));
     }
@@ -775,6 +827,7 @@ mod tests {
             "different",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
     }
@@ -805,6 +858,7 @@ mod tests {
             "different",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
     }
@@ -841,6 +895,7 @@ mod tests {
             "different",
             "localhost",
             &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
         );
         assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
     }
