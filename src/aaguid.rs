@@ -212,6 +212,12 @@ const KNOWN_AAGUIDS: &[([u8; 16], &str)] = &[
 
 /// Parse the canonical textual UUID form into its 16 big-endian bytes
 /// (the layout used in attested credential data).
+///
+/// Const-friendly: malformed input hits a `const`-context panic, which is
+/// a compile error when invoked from a `const`/`static` initializer — the
+/// only intended use. The Tier A panics/indexing lints are allowed for this
+/// module because the whole function only ever runs at compile time.
+#[allow(clippy::panic, clippy::indexing_slicing)]
 const fn uuid(s: &str) -> [u8; 16] {
     // hex nibble → value, const-friendly.
     const fn nibble(c: u8) -> u8 {
@@ -219,6 +225,8 @@ const fn uuid(s: &str) -> [u8; 16] {
             b'0'..=b'9' => c - b'0',
             b'a'..=b'f' => c - b'a' + 10,
             b'A'..=b'F' => c - b'A' + 10,
+            // Reachable only from a malformed constant; the const evaluator
+            // turns this panic into a compile error at the use site.
             _ => panic!("invalid hex digit in AAGUID constant"),
         }
     }

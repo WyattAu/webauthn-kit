@@ -580,6 +580,7 @@ fn verify_packed_x5c(
 ///
 /// # Requirements
 /// REQ-WA-124, REQ-WA-127, REQ-WA-129
+#[allow(clippy::indexing_slicing)] // rpIdHash slice is length-guarded above
 #[allow(clippy::too_many_arguments)]
 fn verify_fido_u2f(
     sig: &[u8],
@@ -630,6 +631,7 @@ fn verify_fido_u2f(
     }
     let mut verification_data = Vec::with_capacity(1 + 32 + 32 + credential_id.len() + 65);
     verification_data.push(0x00);
+    // rpIdHash is the first 32 bytes of authData; length pre-checked above.
     verification_data.extend_from_slice(&auth_data[..32]); // rpIdHash
     verification_data.extend_from_slice(client_data_hash);
     verification_data.extend_from_slice(credential_id);
@@ -832,7 +834,7 @@ fn parse_basic_constraints(value: &[u8]) -> Option<bool> {
     let content = der_content(value, 0x30)?;
     if content.first() == Some(&0x01) && content.len() >= 3 {
         // Explicit BOOLEAN: tag (0x01), length (0x01), value.
-        return Some(content[2] == 0xFF);
+        return Some(content.get(2).copied() == Some(0xFF));
     }
     Some(false)
 }
@@ -929,7 +931,10 @@ fn verify_chain(
         certs.push(cert);
     }
 
-    // Signature chain: leaf → intermediate(s) → root.
+    // Signature chain: leaf → intermediate(s) → root. `windows(2)` always
+    // yields exactly-2 slices, so the destructuring below is infallible;
+    // allow the lint rather than an unreachable expect.
+    #[allow(clippy::indexing_slicing)]
     for pair in certs.windows(2) {
         let (child, parent) = (&pair[0], &pair[1]);
         if child.issuer != parent.subject {
