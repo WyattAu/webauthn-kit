@@ -666,8 +666,9 @@ enum KeyKind {
 enum CertPublicKey {
     /// Uncompressed EC point `0x04 || X || Y`.
     EcPoint(Vec<u8>),
-    /// SubjectPublicKeyInfo DER (ring RSA verifiers take SPKI).
-    SpkiDer(Vec<u8>),
+    /// DER `RSAPublicKey` (PKCS#1) — the SubjectPublicKeyInfo BIT STRING
+    /// content, which is the encoding `ring`'s RSA verifiers parse.
+    RsaKey(Vec<u8>),
 }
 
 /// A parsed, structurally validated X.509 certificate.
@@ -729,7 +730,12 @@ impl Cert {
             }
             (CertPublicKey::EcPoint(point), KeyKind::Ec2)
         } else if spki_alg == OID_ALG_RSA_ENCRYPTION {
-            (CertPublicKey::SpkiDer(spki.raw.to_vec()), KeyKind::Rsa)
+            // ring's RSA verifier parses PKCS#1 `RSAPublicKey`, i.e. the
+            // SPKI's subjectPublicKey BIT STRING content.
+            (
+                CertPublicKey::RsaKey(spki.subject_public_key.data.to_vec()),
+                KeyKind::Rsa,
+            )
         } else {
             return Err(WebauthnError::AttestationError(
                 "attestation certificate uses an unsupported public key algorithm".to_string(),
@@ -794,14 +800,14 @@ impl Cert {
                     "certificate signature algorithm does not match issuer key type".to_string(),
                 ));
             }
-            let CertPublicKey::SpkiDer(spki) = &parent.verifier_key else {
+            let CertPublicKey::RsaKey(rsa_key) = &parent.verifier_key else {
                 return Err(WebauthnError::AttestationError(
-                    "issuer key is not an RSA SPKI".to_string(),
+                    "issuer key is not an RSA key".to_string(),
                 ));
             };
             let verifier = ring::signature::UnparsedPublicKey::new(
                 &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-                spki,
+                rsa_key,
             );
             verifier
                 .verify(&self.tbs, &self.signature)
@@ -1024,10 +1030,10 @@ fn verify_signature_with_cert(cert: &Cert, data: &[u8], sig: &[u8]) -> Result<()
                 .verify(data, sig)
                 .map_err(|_| WebauthnError::SignatureVerificationFailed)
         }
-        CertPublicKey::SpkiDer(spki) => {
+        CertPublicKey::RsaKey(rsa_key) => {
             let verifier = ring::signature::UnparsedPublicKey::new(
                 &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-                spki,
+                rsa_key,
             );
             verifier
                 .verify(data, sig)

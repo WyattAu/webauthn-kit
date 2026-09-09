@@ -268,48 +268,34 @@ pub fn verify_cose_signature(
     }
 }
 
-/// ASN.1 DER (RFC 5280 `SubjectPublicKeyInfo`) encoding helper for RSA public keys.
+/// ASN.1 DER (PKCS#1 RFC 8017 `RSAPublicKey`) encoding helper for RSA
+/// public keys.
 struct RsaPublicKeyDer<'a> {
     n: &'a [u8],
     e: &'a [u8],
 }
 
 impl RsaPublicKeyDer<'_> {
-    /// Encode modulus/exponent into a DER `SubjectPublicKeyInfo` structure.
+    /// Encode modulus/exponent into a DER `RSAPublicKey` structure:
+    /// `SEQUENCE { modulus INTEGER, publicExponent INTEGER }`.
     ///
-    /// The integer encoder strips leading zero bytes and prepends `0x00` when
-    /// the high bit is set, per DER INTEGER rules.
+    /// This is the encoding `ring`'s RSA signature verifiers parse
+    /// (`ring::rsa::parse_public_key`) — NOT an RFC 5280
+    /// `SubjectPublicKeyInfo`.
     fn to_der(&self) -> Result<Vec<u8>, WebauthnError> {
         let mut der = Vec::new();
-
-        let alg_id = Self::encode_sequence_owned({
-            let mut buf = Vec::new();
-            // OID 1.2.840.113549.1.1.1 (rsaEncryption), NULL parameters.
-            buf.extend_from_slice(&[
-                0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B,
-            ]);
-            buf.extend_from_slice(&[0x05, 0x00]);
-            buf
-        });
-
-        let rsa_key = Self::encode_sequence_owned({
-            let mut buf = Vec::new();
-            Self::encode_integer(&mut buf, self.n);
-            Self::encode_integer(&mut buf, self.e);
-            buf
-        });
-
-        der.extend_from_slice(&alg_id);
-        Self::encode_bit_string(&mut der, &rsa_key);
+        Self::encode_integer(&mut der, self.n);
+        Self::encode_integer(&mut der, self.e);
         Self::encode_sequence_in_place(&mut der);
-
         Ok(der)
     }
 
     /// DER-encode an INTEGER from a big-endian byte string.
+    ///
+    /// Strips leading zero octets and prepends a single `0x00` when the
+    /// high bit is set, per DER INTEGER positivity rules (a form ring's
+    /// DER parser accepts).
     fn encode_integer(buf: &mut Vec<u8>, value: &[u8]) {
-        // Strip leading zero octets, but keep at least one byte (a
-        // all-zero value encodes as a single 0x00 octet).
         let start = value
             .iter()
             .position(|&b| b != 0)
@@ -317,32 +303,14 @@ impl RsaPublicKeyDer<'_> {
         let v = value.get(start..).unwrap_or(&[]);
         if v.first().is_some_and(|&b| b & 0x80 != 0) {
             buf.push(0x02);
-            buf.push((v.len() + 1) as u8);
+            Self::encode_length(buf, v.len() + 1);
             buf.push(0x00);
             buf.extend_from_slice(v);
         } else {
             buf.push(0x02);
-            buf.push(v.len() as u8);
+            Self::encode_length(buf, v.len());
             buf.extend_from_slice(v);
         }
-    }
-
-    /// DER-encode a BIT STRING wrapping `content` (unused-bits byte = 0).
-    fn encode_bit_string(buf: &mut Vec<u8>, content: &[u8]) {
-        let len = content.len() + 1;
-        buf.push(0x03);
-        Self::encode_length(buf, len);
-        buf.push(0x00);
-        buf.extend_from_slice(content);
-    }
-
-    /// DER-encode a SEQUENCE header + content into a fresh vector.
-    fn encode_sequence_owned(content: Vec<u8>) -> Vec<u8> {
-        let mut result = Vec::with_capacity(2 + content.len());
-        result.push(0x30);
-        Self::encode_length(&mut result, content.len());
-        result.extend_from_slice(&content);
-        result
     }
 
     /// Wrap the existing buffer content in a SEQUENCE by shifting right.
