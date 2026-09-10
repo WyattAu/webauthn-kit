@@ -1,5 +1,9 @@
 # webauthn-kit
 
+[![docs.rs](https://docs.rs/webauthn-kit/badge.svg)](https://docs.rs/webauthn-kit)
+[![crates.io](https://img.shields.io/crates/v/webauthn-kit.svg)](https://crates.io/crates/webauthn-kit)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+
 Standalone WebAuthn / FIDO2 passkey verification kit for Rust servers: a real,
 custom CTAP2/COSE implementation on [`ring`](https://crates.io/crates/ring) —
 not a wrapper. Zero framework coupling: no storage, no HTTP types, no config

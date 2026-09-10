@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, allow(unused_attributes))]
 //! # webauthn-kit
 //!
 //! Standalone `WebAuthn` / FIDO2 passkey verification kit: real CTAP2/COSE
