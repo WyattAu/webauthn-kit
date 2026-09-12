@@ -50,6 +50,15 @@ pub enum WebauthnError {
     /// Signature failures surface as [`WebauthnError::SignatureVerificationFailed`].
     #[error("Attestation error: {0}")]
     AttestationError(String),
+    /// A ceremony required user verification
+    /// ([`crate::policy::UserVerificationPolicy::Required`]) but the
+    /// authenticator's UV flag was clear.
+    #[error("User verification required but not performed")]
+    UserVerificationRequired,
+    /// The presented credential violates the caller's
+    /// [`crate::policy::CredentialPolicy`] (backup-eligibility policy, ...).
+    #[error("Credential policy violation: {0}")]
+    PolicyViolation(String),
 }
 
 // Tests exercise failure paths and invariants directly; unwrap/expect,
@@ -78,6 +87,8 @@ mod tests {
             WebauthnError::UnsupportedAlgorithm(-7),
             WebauthnError::SignatureVerificationFailed,
             WebauthnError::AttestationError("test".to_string()),
+            WebauthnError::UserVerificationRequired,
+            WebauthnError::PolicyViolation("test".to_string()),
         ];
         for err in errors {
             assert!(!format!("{err}").is_empty());

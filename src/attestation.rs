@@ -1758,6 +1758,139 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // ES384 / EdDSA credentials through the attestation paths
+    // ------------------------------------------------------------------
+
+    use crate::crypto::{COSE_ALG_EDDSA, COSE_ALG_ES384};
+
+    /// (authData, clientDataHash, P-384 credential key, signing key).
+    fn credential_p384() -> (Vec<u8>, Vec<u8>, CosePublicKey, EcdsaKeyPair) {
+        use ring::signature::{EcdsaKeyPair as P384Pair, ECDSA_P384_SHA384_FIXED_SIGNING};
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = P384Pair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &rng).unwrap();
+        let kp =
+            P384Pair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, pkcs8.as_ref(), &rng).unwrap();
+        let pub_bytes = kp.public_key().as_ref();
+        let key = CosePublicKey::Ec2 {
+            x: pub_bytes[1..49].to_vec(),
+            y: pub_bytes[49..97].to_vec(),
+        };
+        let auth_data = vec![0x11u8; 42];
+        let client_data_hash = sha2::Sha256::digest(b"client data").to_vec();
+        (auth_data, client_data_hash, key, kp)
+    }
+
+    /// (authData, clientDataHash, Ed25519 credential key, signing key).
+    fn credential_ed25519() -> (
+        Vec<u8>,
+        Vec<u8>,
+        CosePublicKey,
+        ring::signature::Ed25519KeyPair,
+    ) {
+        use ring::signature::Ed25519KeyPair;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let key = CosePublicKey::Okp {
+            id: kp.public_key().as_ref().to_vec(),
+        };
+        let auth_data = vec![0x11u8; 42];
+        let client_data_hash = sha2::Sha256::digest(b"client data").to_vec();
+        (auth_data, client_data_hash, key, kp)
+    }
+
+    /// Packed self-attestation with an ES384 credential key: the signature
+    /// over authData ‖ clientDataHash verifies via the ES384 arm.
+    #[test]
+    fn packed_self_es384_credential_ok() {
+        let (auth_data, cdh, key, kp) = credential_p384();
+        let sig = kp
+            .sign(
+                &ring::rand::SystemRandom::new(),
+                &signed_data(&auth_data, &cdh),
+            )
+            .unwrap();
+        let statement = packed_stmt(COSE_ALG_ES384, sig.as_ref(), Vec::new());
+        let result = verify_attestation(
+            "packed",
+            Some(&statement),
+            &auth_data,
+            &cdh,
+            CRED_ID,
+            COSE_ALG_ES384,
+            &key,
+            AAGUID,
+            &AttestationPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(result.trust_level, TrustLevel::SelfAttested);
+    }
+
+    /// Packed self-attestation with an Ed25519 credential key.
+    #[test]
+    fn packed_self_eddsa_credential_ok() {
+        let (auth_data, cdh, key, kp) = credential_ed25519();
+        let sig = kp.sign(&signed_data(&auth_data, &cdh));
+        let statement = packed_stmt(COSE_ALG_EDDSA, sig.as_ref(), Vec::new());
+        let result = verify_attestation(
+            "packed",
+            Some(&statement),
+            &auth_data,
+            &cdh,
+            CRED_ID,
+            COSE_ALG_EDDSA,
+            &key,
+            AAGUID,
+            &AttestationPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(result.trust_level, TrustLevel::SelfAttested);
+    }
+
+    /// `none` attestation is algorithm-agnostic: an ES384 credential
+    /// registers with TrustLevel::None and no warnings.
+    #[test]
+    fn none_format_es384_credential() {
+        let (auth_data, cdh, key, _) = credential_p384();
+        let result = verify_attestation(
+            "none",
+            Some(&cbor_map(vec![])),
+            &auth_data,
+            &cdh,
+            CRED_ID,
+            COSE_ALG_ES384,
+            &key,
+            AAGUID,
+            &AttestationPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(result.format, AttestationFormat::None);
+        assert_eq!(result.trust_level, TrustLevel::None);
+    }
+
+    /// Packed **x5c** attestation statements remain limited to ES256/RS256:
+    /// the certificate chain machinery only parses P-256/RSA keys, so an
+    /// ES384 statement alg fails closed rather than mis-verifying.
+    #[test]
+    fn packed_x5c_es384_statement_alg_rejected() {
+        let att_key = ec_key();
+        let cert_der = ec_self_cert("attestor", &att_key, &[]);
+        let (_, _, cred_key, _) = credential();
+        let statement = packed_stmt(COSE_ALG_ES384, &[0u8; 96], vec![cert_der]);
+        let err = verify_packed(
+            &statement,
+            &cred_key,
+            COSE_ALG_ES384,
+            &AttestationPolicy::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            WebauthnError::UnsupportedAlgorithm(COSE_ALG_ES384)
+        ));
+    }
+
+    // ------------------------------------------------------------------
     // Packed x5c attestation
     // ------------------------------------------------------------------
 

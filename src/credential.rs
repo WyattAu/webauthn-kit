@@ -46,6 +46,20 @@ pub struct WebauthnCredential {
     pub attestation_format: String,
     /// Whether user verification (biometrics/PIN) was performed at registration.
     pub user_verified: bool,
+    /// Backup eligibility (BE) flag at registration: `true` when the
+    /// credential is a multi-device/syncable credential. Immutable for the
+    /// lifetime of the credential — persist and keep for policy decisions.
+    ///
+    /// # Security note
+    ///
+    /// BE=1 means account recovery follows the user's *cloud account* rules,
+    /// not this credential's confinement to one device. See
+    /// [`crate::policy::BackupPolicy`] for the trade-offs.
+    pub backup_eligible: bool,
+    /// Backup state (BS) flag at registration: whether the credential was
+    /// backed up at ceremony time. Volatile — superseded by the BS flag
+    /// reported on every [`AuthenticationResult`].
+    pub backup_state: bool,
 }
 
 /// Options sent to the client for credential registration
@@ -124,6 +138,11 @@ pub struct AuthenticatorSelection {
     pub resident_key: String,
     /// User verification requirement.
     pub user_verification: String,
+    /// Legacy L2 companion of `resident_key = "required"`: tells L2-only
+    /// clients a discoverable credential is mandatory. Only meaningful when
+    /// `resident_key` is `"required"` (WebAuthn L3 §5.4.4).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub require_resident_key: bool,
 }
 
 /// Response from the client during registration
@@ -221,6 +240,12 @@ pub struct RegistrationResult {
     pub attestation: crate::attestation::AttestationResult,
     /// Whether user verification was performed.
     pub user_verified: bool,
+    /// Backup eligibility (BE) flag: `true` for multi-device/syncable
+    /// credentials. Immutable; persist alongside the credential record.
+    pub backup_eligible: bool,
+    /// Backup state (BS) flag: whether the credential was backed up at
+    /// registration time.
+    pub backup_state: bool,
 }
 
 /// Result of a successful authentication.
@@ -236,6 +261,16 @@ pub struct AuthenticationResult {
     pub credential_id: String,
     /// Updated sign count; persist this after verification succeeds.
     pub new_sign_count: u32,
-    /// Whether user verification was performed.
+    /// Whether user verification was performed. Under
+    /// [`crate::policy::UserVerificationPolicy::Required`] this is
+    /// guaranteed `true` (the ceremony is otherwise rejected).
     pub user_verified: bool,
+    /// Backup state (BS) flag from the assertion: whether the credential is
+    /// currently backed up. Observed to change over time for synced
+    /// credentials; persist if you track it.
+    pub backup_state: bool,
+    /// Backup eligibility (BE) flag from the assertion. Should match the
+    /// value observed at registration; a mismatch indicates the authenticator
+    /// is violating the spec.
+    pub backup_eligible: bool,
 }

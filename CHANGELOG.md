@@ -5,6 +5,64 @@ Changelog](https://keepachangelog.com/) — versions follow [semver](https://sem
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-12
+
+### Added
+
+- **ES384** (COSE −35, ECDSA P-384 + SHA-384): COSE key parsing (SEC1 P-384
+  points) and fixed-width signature verification via `ring`'s
+  `ECDSA_P384_SHA384_FIXED`. No new dependencies — `ring` 0.17 already
+  provides constant-time P-384, keeping the "all cryptography via ring"
+  supply-chain invariant intact.
+- **EdDSA** (COSE −8, Ed25519): OKP COSE key parsing (raw 32-byte keys) and
+  verification via `ring`'s `ED25519`. Likewise no new dependencies.
+- **Credential policies** (`policy` module, enforced server-side):
+  - `UserVerificationPolicy` (`Required` / `Preferred` / `Discouraged`) on
+    both ceremonies. `Required` rejects assertions/registrations whose UV
+    flag is clear with the new `WebauthnError::UserVerificationRequired`.
+  - `BackupPolicy` (`Allow` / `RequireDeviceBound`) over the WebAuthn L3
+    BE/BS flags (backup eligibility / backup state), which are now parsed
+    from signed authenticator data and reported on `RegistrationResult`,
+    `AuthenticationResult`, and `WebauthnCredential`. `RequireDeviceBound`
+    rejects multi-device (syncable) credentials.
+  - `CredentialPolicy::allowed_algorithms`: registration-time server-side
+    algorithm allowlist — credentials with disallowed COSE algorithms are
+    rejected even when the kit could verify them.
+  - `CredentialPolicy::strict()` helper (UV required, device-bound, ES256).
+- **Algorithm/curve binding at parse time** (REQ-WA-146): a P-256 key
+  claiming ES384, a P-384 key claiming ES256, or an OKP key claiming a
+  non-EdDSA algorithm is rejected in `parse_cose_key` before any signature
+  work — closing the algorithm-confusion class for the new curves.
+- Registration options now convey `residentKey` (with the L2
+  `requireResidentKey` flag when required), `userVerification`, and
+  `attestation` preferences from the new `WebauthnConfig` fields
+  (`resident_key`, `credential_policy.user_verification`,
+  `attestation_conveyance`). These are preferences; enforcement lives in
+  `CredentialPolicy`.
+
+### Changed
+
+- `verify_registration` takes an additional `&CredentialPolicy` argument;
+  `AuthenticationParams` gained a `policy: CredentialPolicy` field.
+  `CredentialPolicy::default()` preserves the 0.2.x behavior (UV reported,
+  never required).
+- `WebauthnConfig::allowed_algorithms` default is now `[-7, -35, -257]`
+  (ES256, ES384, RS256); the empty-config advertising fallback matches.
+- Packed **x5c** attestation statements remain ES256/RS256-only (the X.509
+  chain machinery parses P-256/RSA certificate keys only); packed
+  **self**-attestation and `none` support all credential algorithms.
+
+### Security
+
+- **UV enforcement** (was THREAT-MODEL OPEN-4): 0.2.x parsed and reported
+  the user-verification flag but never enforced it; callers had to
+  hand-roll the check. `UserVerificationPolicy::Required` now enforces it
+  server-side in both ceremonies.
+- BE/BS flags are authenticated (inside signed authenticator data), so
+  `BackupPolicy` decisions cannot be manipulated by the client without
+  breaking the assertion signature. See `policy` module docs for the
+  account-recovery implications of allowing synced (BE=1) passkeys.
+
 ## [0.2.2] - 2026-09-09
 
 ### Fixed

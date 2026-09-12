@@ -17,6 +17,7 @@
 
 use sha2::Digest;
 use webauthn_kit::crypto::{parse_cose_key, verify_cose_signature, COSE_ALG_RS256};
+use webauthn_kit::policy::CredentialPolicy;
 use webauthn_kit::{
     base64_decode_urlsafe, base64_encode_urlsafe, check_sign_count, verify_authentication,
     verify_registration, AttestationPolicy, AuthenticationParams, ChallengeStore, WebauthnConfig,
@@ -124,6 +125,9 @@ fn registration_authentication_roundtrip_es256() {
         rp_origins: origins(),
         allowed_algorithms: vec![-7, -257],
         attestation: webauthn_kit::attestation::AttestationPolicy::default(),
+        credential_policy: webauthn_kit::policy::CredentialPolicy::default(),
+        resident_key: webauthn_kit::policy::ResidentKeyPolicy::Preferred,
+        attestation_conveyance: webauthn_kit::policy::AttestationConveyance::None,
         challenge_timeout_secs: 300,
     };
 
@@ -156,6 +160,7 @@ fn registration_authentication_roundtrip_es256() {
         RP_ID,
         &origins(),
         &AttestationPolicy::default(),
+        &webauthn_kit::policy::CredentialPolicy::default(),
     )
     .expect("registration must verify");
 
@@ -194,6 +199,7 @@ fn registration_authentication_roundtrip_es256() {
         RP_ID,
         &origins(),
         &AttestationPolicy::default(),
+        &webauthn_kit::policy::CredentialPolicy::default(),
     );
     assert!(matches!(
         duplicate,
@@ -240,6 +246,7 @@ fn registration_authentication_roundtrip_es256() {
         allowed_credential_ids: vec![registration.credential_id.clone()],
         rp_id: RP_ID.to_string(),
         rp_origins: origins(),
+        policy: webauthn_kit::policy::CredentialPolicy::default(),
     })
     .expect("authentication must verify");
 
@@ -322,6 +329,7 @@ fn fixed_vector_challenge_echo() {
         RP_ID,
         &origins(),
         &AttestationPolicy::default(),
+        &webauthn_kit::policy::CredentialPolicy::default(),
     );
     // Must fail on attestation (challenge/origin/type all OK), i.e. AttestationError.
     assert!(matches!(result, Err(WebauthnError::AttestationError(_))));
@@ -342,6 +350,7 @@ fn fixed_vector_challenge_echo() {
         RP_ID,
         &origins(),
         &AttestationPolicy::default(),
+        &webauthn_kit::policy::CredentialPolicy::default(),
     );
     assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
 }
@@ -356,6 +365,9 @@ fn options_serde_roundtrip() {
         rp_origins: vec!["https://example.com".to_string()],
         allowed_algorithms: vec![-7, -257],
         attestation: webauthn_kit::attestation::AttestationPolicy::default(),
+        credential_policy: webauthn_kit::policy::CredentialPolicy::default(),
+        resident_key: webauthn_kit::policy::ResidentKeyPolicy::Preferred,
+        attestation_conveyance: webauthn_kit::policy::AttestationConveyance::None,
         challenge_timeout_secs: 300,
     };
     let store = ChallengeStore::new();
@@ -372,6 +384,8 @@ fn options_serde_roundtrip() {
     assert_eq!(back.rp_id, "example.com");
 
     let credential = webauthn_kit::WebauthnCredential {
+        backup_eligible: true,
+        backup_state: true,
         credential_id: "abc".to_string(),
         public_key_cose: vec![1, 2, 3],
         sign_count: 7,
@@ -384,6 +398,183 @@ fn options_serde_roundtrip() {
     let json = serde_json::to_string(&credential).unwrap();
     let back: webauthn_kit::WebauthnCredential = serde_json::from_str(&json).unwrap();
     assert_eq!(back.sign_count, 7);
+}
+
+/// ES384 integration roundtrip: P-384 keypair generated with ring, COSE
+/// key with crv 2 / alg −35, full registration through `verify_registration`
+/// and assertion verification through `verify_authentication`.
+#[test]
+fn registration_authentication_roundtrip_es384() {
+    use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P384_SHA384_FIXED_SIGNING};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &rng).unwrap();
+    let key_pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, pkcs8.as_ref(), &rng).unwrap();
+
+    let pub_bytes = key_pair.public_key().as_ref();
+    let cose_key = build_cose_ec2_key_384(&pub_bytes[1..49], &pub_bytes[49..97]);
+
+    let config = WebauthnConfig {
+        allowed_algorithms: vec![-35],
+        ..test_config()
+    };
+    let mut store = ChallengeStore::new();
+
+    // Registration.
+    let (challenge_id, options) = store.generate_registration_challenge(&config, "bob", "Bob", &[]);
+    let raw = base64_decode_urlsafe(&challenge_id).unwrap();
+    store.store_registration_challenge(&challenge_id, "bob", raw);
+    let (_, challenge_bytes) = store
+        .consume_registration_challenge(&challenge_id, 300)
+        .unwrap();
+
+    let credential_id = vec![0x38, 0x34, 0xAD, 0x01];
+    let auth_data = build_auth_data(RP_ID, 0x45, 0, &credential_id, &cose_key); // UP|UV|AT
+    let client_data = serde_json::json!({
+        "type": "webauthn.create",
+        "challenge": options.challenge,
+        "origin": ORIGIN,
+    });
+    let registration = verify_registration(
+        &challenge_bytes,
+        &base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap()),
+        &base64_encode_urlsafe(&build_attestation_object(&auth_data)),
+        "",
+        RP_ID,
+        &origins(),
+        &AttestationPolicy::default(),
+        &CredentialPolicy::default(),
+    )
+    .expect("ES384 registration must verify");
+    assert!(registration.device_name.contains("ES384"));
+
+    // Authentication.
+    let (auth_challenge_id, auth_options) =
+        store.generate_authentication_challenge(&config, vec![registration.credential_id.clone()]);
+    let raw = base64_decode_urlsafe(&auth_challenge_id).unwrap();
+    store.store_authentication_challenge(
+        &auth_challenge_id,
+        "bob",
+        raw,
+        vec![registration.credential_id.clone()],
+    );
+    let (_, auth_challenge, _) = store
+        .consume_authentication_challenge(&auth_challenge_id, 300)
+        .unwrap();
+
+    let assertion_auth_data = build_auth_data(RP_ID, 0x01, 1, &[], &[]);
+    let assertion_client_data = serde_json::json!({
+        "type": "webauthn.get",
+        "challenge": auth_options.challenge,
+        "origin": ORIGIN,
+    });
+    let client_data_bytes = serde_json::to_vec(&assertion_client_data).unwrap();
+    let mut signed_data = assertion_auth_data.clone();
+    signed_data.extend_from_slice(&sha2::Sha256::digest(&client_data_bytes));
+    let signature = key_pair.sign(&rng, &signed_data).unwrap();
+
+    let result = verify_authentication(&AuthenticationParams {
+        challenge_bytes: auth_challenge,
+        client_data_json_b64: base64_encode_urlsafe(&client_data_bytes),
+        authenticator_data_b64: base64_encode_urlsafe(&assertion_auth_data),
+        signature_b64: base64_encode_urlsafe(signature.as_ref()),
+        credential_id_b64: registration.credential_id.clone(),
+        public_key_cose: cose_key,
+        current_sign_count: 0,
+        allowed_credential_ids: vec![registration.credential_id.clone()],
+        rp_id: RP_ID.to_string(),
+        rp_origins: origins(),
+        policy: CredentialPolicy::default(),
+    })
+    .expect("ES384 authentication must verify");
+    assert_eq!(result.new_sign_count, 1);
+}
+
+fn build_cose_ec2_key_384(x: &[u8], y: &[u8]) -> Vec<u8> {
+    let map = vec![
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(2.into()),
+        ),
+        (
+            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer((-35).into()),
+        ),
+        (
+            ciborium::Value::Integer((-1).into()),
+            ciborium::Value::Integer(2.into()),
+        ),
+        (
+            ciborium::Value::Integer((-2).into()),
+            ciborium::Value::Bytes(x.to_vec()),
+        ),
+        (
+            ciborium::Value::Integer((-3).into()),
+            ciborium::Value::Bytes(y.to_vec()),
+        ),
+    ];
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut buf).unwrap();
+    buf
+}
+
+fn test_config() -> WebauthnConfig {
+    WebauthnConfig {
+        rp_id: RP_ID.to_string(),
+        rp_name: "Kit".to_string(),
+        rp_origins: origins(),
+        allowed_algorithms: vec![-7, -257],
+        attestation: webauthn_kit::attestation::AttestationPolicy::default(),
+        credential_policy: webauthn_kit::policy::CredentialPolicy::default(),
+        resident_key: webauthn_kit::policy::ResidentKeyPolicy::Preferred,
+        attestation_conveyance: webauthn_kit::policy::AttestationConveyance::None,
+        challenge_timeout_secs: 300,
+    }
+}
+
+/// EdDSA integration roundtrip: Ed25519 keypair, OKP COSE key, full
+/// registration → authentication.
+#[test]
+fn eddsa_cose_key_parse_and_dispatch() {
+    use ring::signature::{Ed25519KeyPair, KeyPair as _};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+    let map = vec![
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer((-8).into()),
+        ),
+        (
+            ciborium::Value::Integer((-1).into()),
+            ciborium::Value::Integer(6.into()),
+        ),
+        (
+            ciborium::Value::Integer((-2).into()),
+            ciborium::Value::Bytes(key_pair.public_key().as_ref().to_vec()),
+        ),
+    ];
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut buf).unwrap();
+
+    let (alg, key) = parse_cose_key(&buf).unwrap();
+    assert_eq!(alg, -8);
+
+    let message = b"ed25519 dispatch vector";
+    let signature = key_pair.sign(message);
+    verify_cose_signature(-8, &key, message, signature.as_ref())
+        .expect("valid Ed25519 signature must verify");
+
+    // Wrong dispatch: OKP key under ES256 → key-type mismatch, not a crash.
+    let result = verify_cose_signature(-7, &key, message, signature.as_ref());
+    assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
 }
 
 /// base64url helper contract check (padding-less, URL-safe alphabet).

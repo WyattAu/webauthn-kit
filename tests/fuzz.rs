@@ -63,6 +63,7 @@ proptest! {
             RP_ID,
             &origins(),
             &AttestationPolicy::default(),
+            &webauthn_kit::policy::CredentialPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -95,6 +96,7 @@ proptest! {
             RP_ID,
             &origins(),
             &AttestationPolicy::default(),
+            &webauthn_kit::policy::CredentialPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -118,6 +120,7 @@ proptest! {
             allowed_credential_ids: vec!["cred".to_string()],
             rp_id: RP_ID.to_string(),
             rp_origins: origins(),
+            policy: webauthn_kit::policy::CredentialPolicy::default(),
         };
         assert_err_is_verificationish(verify_authentication(&params));
     }
@@ -141,6 +144,7 @@ proptest! {
             allowed_credential_ids: vec!["cred".to_string()],
             rp_id: RP_ID.to_string(),
             rp_origins: origins(),
+            policy: webauthn_kit::policy::CredentialPolicy::default(),
         };
         assert_err_is_verificationish(verify_authentication(&params));
     }
@@ -181,6 +185,7 @@ proptest! {
             RP_ID,
             &origins(),
             &AttestationPolicy::default(),
+            &webauthn_kit::policy::CredentialPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -206,6 +211,7 @@ proptest! {
             RP_ID,
             &origins(),
             &AttestationPolicy::default(),
+            &webauthn_kit::policy::CredentialPolicy::default(),
         );
         assert_err_is_verificationish(result);
     }
@@ -300,6 +306,7 @@ fn origin_mismatch_rejected_and_rp_hash_mismatch_rejected() {
         RP_ID,
         &origins(),
         &AttestationPolicy::default(),
+        &webauthn_kit::policy::CredentialPolicy::default(),
     );
     assert!(matches!(result, Err(WebauthnError::VerificationFailed(_))));
 
@@ -322,6 +329,7 @@ fn origin_mismatch_rejected_and_rp_hash_mismatch_rejected() {
         allowed_credential_ids: vec!["cred".to_string()],
         rp_id: RP_ID.to_string(),
         rp_origins: origins(),
+        policy: webauthn_kit::policy::CredentialPolicy::default(),
     };
     assert!(matches!(
         verify_authentication(&params),

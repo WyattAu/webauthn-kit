@@ -38,6 +38,7 @@ use crate::credential::{
 };
 use crate::crypto::{base64_encode_urlsafe, generate_challenge_bytes};
 use crate::error::WebauthnError;
+use crate::policy::ResidentKeyPolicy;
 
 /// Current Unix timestamp in seconds; `0` if the clock is before the epoch
 /// (which would only make challenges look stale, never fresh — fail-safe).
@@ -296,12 +297,19 @@ impl ChallengeStore {
     /// `excludeCredentials` so compliant authenticators refuse re-registering
     /// a credential the server already holds.
     ///
+    /// The `residentKey` / `userVerification` / `attestation` preferences in
+    /// the options reflect the corresponding [`WebauthnConfig`] settings;
+    /// when [`ResidentKeyPolicy::Required`] is configured, the L2
+    /// `requireResidentKey = true` flag is emitted as well. These are
+    /// *preferences*: server-side enforcement lives in
+    /// [`crate::policy::CredentialPolicy`].
+    ///
     /// Returns `(challenge_id, options)`; the challenge ID doubles as the
     /// Base64url challenge string and the returned options embed the same
     /// value. Store the pair via [`ChallengeStore::store_registration_challenge`].
     ///
     /// # Requirements
-    /// REQ-WA-005
+    /// REQ-WA-005, REQ-WA-145
     #[must_use]
     pub fn generate_registration_challenge(
         &self,
@@ -323,6 +331,10 @@ impl ChallengeStore {
                     type_: "public-key".to_string(),
                 },
                 PubKeyCredParam {
+                    alg: -35,
+                    type_: "public-key".to_string(),
+                },
+                PubKeyCredParam {
                     alg: -257,
                     type_: "public-key".to_string(),
                 },
@@ -337,6 +349,7 @@ impl ChallengeStore {
                 .collect()
         };
 
+        let resident_key_required = config.resident_key == ResidentKeyPolicy::Required;
         let options = RegistrationOptions {
             challenge: challenge_b64.clone(),
             rp: RelyingParty {
@@ -358,10 +371,15 @@ impl ChallengeStore {
                     transports: None,
                 })
                 .collect(),
-            attestation: "none".to_string(),
+            attestation: config.attestation_conveyance.as_str().to_string(),
             authenticator_selection: AuthenticatorSelection {
-                resident_key: "preferred".to_string(),
-                user_verification: "preferred".to_string(),
+                resident_key: config.resident_key.as_str().to_string(),
+                user_verification: config
+                    .credential_policy
+                    .user_verification
+                    .as_str()
+                    .to_string(),
+                require_resident_key: resident_key_required,
             },
         };
 
@@ -371,11 +389,15 @@ impl ChallengeStore {
     /// Generate a fresh authentication challenge and the corresponding
     /// `navigator.credentials.get()` options.
     ///
+    /// The `userVerification` preference reflects the config's credential
+    /// policy; enforcement of that policy happens in
+    /// [`crate::verify_authentication`].
+    ///
     /// Returns `(challenge_id, options)` as in
     /// [`ChallengeStore::generate_registration_challenge`].
     ///
     /// # Requirements
-    /// REQ-WA-006
+    /// REQ-WA-006, REQ-WA-145
     #[must_use]
     pub fn generate_authentication_challenge(
         &self,
@@ -397,7 +419,11 @@ impl ChallengeStore {
                 })
                 .collect(),
             timeout: config.challenge_timeout_secs * 1000,
-            user_verification: "preferred".to_string(),
+            user_verification: config
+                .credential_policy
+                .user_verification
+                .as_str()
+                .to_string(),
         };
 
         (challenge_b64, options)
@@ -424,6 +450,9 @@ mod tests {
             rp_origins: vec!["http://localhost:8080".to_string()],
             allowed_algorithms: vec![-7, -257],
             attestation: crate::attestation::AttestationPolicy::default(),
+            credential_policy: crate::policy::CredentialPolicy::default(),
+            resident_key: crate::policy::ResidentKeyPolicy::Preferred,
+            attestation_conveyance: crate::policy::AttestationConveyance::None,
             challenge_timeout_secs: 300,
         }
     }
@@ -576,6 +605,9 @@ mod tests {
             rp_origins: vec!["https://custom.example.com".to_string()],
             allowed_algorithms: vec![-7, -257],
             attestation: crate::attestation::AttestationPolicy::default(),
+            credential_policy: crate::policy::CredentialPolicy::default(),
+            resident_key: crate::policy::ResidentKeyPolicy::Preferred,
+            attestation_conveyance: crate::policy::AttestationConveyance::None,
             challenge_timeout_secs: 600,
         };
         let (_, options) = store.generate_registration_challenge(
@@ -599,6 +631,9 @@ mod tests {
             rp_origins: vec![],
             allowed_algorithms: vec![],
             attestation: crate::attestation::AttestationPolicy::default(),
+            credential_policy: crate::policy::CredentialPolicy::default(),
+            resident_key: crate::policy::ResidentKeyPolicy::Preferred,
+            attestation_conveyance: crate::policy::AttestationConveyance::None,
             challenge_timeout_secs: 120,
         };
         let (_, options) = store
@@ -606,6 +641,47 @@ mod tests {
         assert_eq!(options.rp_id, "custom.example.com");
         assert_eq!(options.timeout, 120_000);
         assert_eq!(options.allow_credentials.len(), 2);
+    }
+
+    /// REQ-WA-145: the config's resident-key, user-verification, and
+    /// attestation-conveyance preferences are reflected in the emitted
+    /// options, including the L2 `requireResidentKey` flag when resident
+    /// keys are required.
+    #[test]
+    fn test_policy_preferences_plumbed_into_options() {
+        let store = ChallengeStore::new();
+        let config = WebauthnConfig {
+            resident_key: crate::policy::ResidentKeyPolicy::Required,
+            attestation_conveyance: crate::policy::AttestationConveyance::Direct,
+            credential_policy: crate::policy::CredentialPolicy {
+                user_verification: crate::policy::UserVerificationPolicy::Required,
+                ..crate::policy::CredentialPolicy::default()
+            },
+            ..test_config()
+        };
+
+        let (_, reg) = store.generate_registration_challenge(&config, "alice", "Alice", &[]);
+        assert_eq!(reg.attestation, "direct");
+        assert_eq!(reg.authenticator_selection.resident_key, "required");
+        assert!(reg.authenticator_selection.require_resident_key);
+        assert_eq!(reg.authenticator_selection.user_verification, "required");
+
+        let (_, auth) = store.generate_authentication_challenge(&config, vec![]);
+        assert_eq!(auth.user_verification, "required");
+    }
+
+    /// REQ-WA-145: discouraging resident keys never sets the L2
+    /// `requireResidentKey` flag.
+    #[test]
+    fn test_discouraged_resident_key_leaves_require_flag_false() {
+        let store = ChallengeStore::new();
+        let config = WebauthnConfig {
+            resident_key: crate::policy::ResidentKeyPolicy::Discouraged,
+            ..test_config()
+        };
+        let (_, reg) = store.generate_registration_challenge(&config, "alice", "Alice", &[]);
+        assert_eq!(reg.authenticator_selection.resident_key, "discouraged");
+        assert!(!reg.authenticator_selection.require_resident_key);
     }
 
     #[test]
@@ -682,7 +758,7 @@ mod tests {
     }
 
     /// An empty `allowed_algorithms` config falls back to advertising the
-    /// two implemented algorithms (ES256, RS256).
+    /// implemented algorithms (ES256, ES384, RS256).
     #[test]
     fn empty_algorithms_fall_back_to_es256_rs256() {
         let store = ChallengeStore::new();
@@ -696,6 +772,13 @@ mod tests {
             .iter()
             .map(|p| (p.alg, p.type_.as_str()))
             .collect();
-        assert_eq!(params, vec![(-7, "public-key"), (-257, "public-key")]);
+        assert_eq!(
+            params,
+            vec![
+                (-7, "public-key"),
+                (-35, "public-key"),
+                (-257, "public-key")
+            ]
+        );
     }
 }

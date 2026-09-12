@@ -16,8 +16,12 @@
 //!   x5c-based basic/AttCA), and `fido-u2f` formats, with X.509 chain
 //!   verification against caller-configured trust anchors — [`attestation`]
 //! - COSE public key parsing and signature verification for **ES256**
-//!   (ECDSA P-256 + SHA-256) and **RS256** (RSA PKCS#1 v1.5 + SHA-256) via
-//!   `ring` — [`crypto`]
+//!   (ECDSA P-256 + SHA-256), **ES384** (ECDSA P-384 + SHA-384), **EdDSA**
+//!   (Ed25519), and **RS256** (RSA PKCS#1 v1.5 + SHA-256) via `ring` —
+//!   [`crypto`]
+//! - Enforceable credential policies — user verification (UV), multi-device
+//!   / backup eligibility (BE/BS), and registration algorithm allowlists —
+//!   [`policy`]
 //! - Challenge generation from the OS CSPRNG, single-use consumption
 //!   (replay protection), freshness/expiry enforcement, and the sign-count
 //!   clone-detection state machine — [`challenge`]
@@ -28,16 +32,24 @@
 //! ```
 //! use webauthn_kit::{
 //!     check_sign_count, verify_authentication, verify_registration, AttestationPolicy,
-//!     AuthenticationParams, ChallengeStore, WebauthnConfig,
+//!     AuthenticationParams, ChallengeStore, CredentialPolicy, UserVerificationPolicy,
+//!     WebauthnConfig,
 //! };
 //!
 //! let config = WebauthnConfig {
 //!     rp_id: "example.com".into(),
 //!     rp_name: "Example".into(),
 //!     rp_origins: vec!["https://example.com".into()],
-//!     allowed_algorithms: vec![-7, -257],
+//!     allowed_algorithms: vec![-7, -35, -257], // ES256, ES384, RS256
 //!     challenge_timeout_secs: 300,
 //!     attestation: AttestationPolicy::default(),
+//!     // Server-side enforcement: UV required, synced passkeys rejected.
+//!     credential_policy: CredentialPolicy {
+//!         user_verification: UserVerificationPolicy::Required,
+//!         ..CredentialPolicy::default()
+//!     },
+//!     resident_key: Default::default(),
+//!     attestation_conveyance: Default::default(),
 //! };
 //!
 //! // 1. Issue a challenge (single-use; store the (id, bytes) pair).
@@ -88,14 +100,23 @@
 //!   treated as self-attested. Only `TrustLevel::AttCa` attests device
 //!   provenance. Other formats (`android-key`, `tpm`, ...) are tranche-2
 //!   work — see [`attestation`].
-//! - Supported algorithms: ES256 (COSE -7) and RS256 (COSE -257) only.
-//!   Other algorithms (including OKP/Ed25519) are rejected with
-//!   [`WebauthnError::UnsupportedAlgorithm`].
+//! - Supported algorithms: ES256 (COSE −7), ES384 (COSE −35), EdDSA
+//!   (Ed25519, COSE −8), and RS256 (COSE −257). Curve/algorithm bindings are
+//!   enforced at parse time (a P-256 key claiming ES384 is rejected); other
+//!   algorithms are rejected with [`WebauthnError::UnsupportedAlgorithm`].
 //! - Sign-count policy: a stored counter of 0 disables the check
 //!   (authenticators without counters); otherwise a strictly decreasing
 //!   counter is rejected. Equal counters are allowed by design.
-//! - The UV (user verification) flag is reported, never required; enforce
-//!   your own policy per ceremony.
+//! - **User verification** ([`policy::UserVerificationPolicy`]): `Required`
+//!   is enforced server-side — ceremonies whose authenticator UV flag is
+//!   clear fail with [`WebauthnError::UserVerificationRequired`]. The
+//!   default (`Preferred`) reports the flag without rejecting, preserving
+//!   per-caller policy decisions.
+//! - **Multi-device credentials** ([`policy::BackupPolicy`]): the BE/BS
+//!   flags are parsed from signed authenticator data and reported on both
+//!   ceremony results; `BackupPolicy::RequireDeviceBound` rejects syncable
+//!   (BE=1) credentials. See the policy module docs for account-recovery
+//!   implications before allowing synced passkeys on sensitive flows.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -107,6 +128,7 @@ pub mod config;
 pub mod credential;
 pub mod crypto;
 pub mod error;
+pub mod policy;
 pub mod protocol;
 
 pub use aaguid::known_aaguid;
@@ -122,8 +144,13 @@ pub use credential::{
 };
 pub use crypto::{
     alg_to_name, base64_decode_urlsafe, base64_encode_urlsafe, cbor_bytes, cbor_map_entries,
-    generate_challenge_bytes, parse_cose_key, verify_cose_signature, CosePublicKey, COSE_ALG_ES256,
-    COSE_ALG_RS256, COSE_KTY_EC2, COSE_KTY_OKP, COSE_KTY_RSA,
+    generate_challenge_bytes, parse_cose_key, verify_cose_signature, CosePublicKey, COSE_ALG_EDDSA,
+    COSE_ALG_ES256, COSE_ALG_ES384, COSE_ALG_RS256, COSE_CRV_ED25519, COSE_CRV_P384, COSE_KTY_EC2,
+    COSE_KTY_OKP, COSE_KTY_RSA,
 };
 pub use error::WebauthnError;
+pub use policy::{
+    AttestationConveyance, BackupPolicy, CredentialPolicy, ResidentKeyPolicy,
+    UserVerificationPolicy,
+};
 pub use protocol::{verify_authentication, verify_registration, AuthenticationParams};

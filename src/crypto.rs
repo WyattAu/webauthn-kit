@@ -1,25 +1,29 @@
-//! COSE key parsing and signature verification (ES256 / RS256) via `ring`,
-//! plus base64url helpers and CSPRNG challenge generation.
+//! COSE key parsing and signature verification (ES256 / ES384 / RS256 /
+//! EdDSA) via `ring`, plus base64url helpers and CSPRNG challenge
+//! generation.
 //!
 //! # Security
 //!
-//! - All cryptographic primitives come from `ring` (constant-time ECDSA/RSA
-//!   verification). This crate contains no hand-rolled cryptography; the only
-//!   custom encoding is RFC 5280 DER *wrapping* of already-validated RSA
-//!   modulus/exponent byte strings, which never touches secret material.
+//! - All cryptographic primitives come from `ring` (constant-time
+//!   ECDSA/RSA/Ed25519 verification). This crate contains no hand-rolled
+//!   cryptography; the only custom encoding is RFC 5280 DER *wrapping* of
+//!   already-validated RSA modulus/exponent byte strings, which never
+//!   touches secret material.
 //! - Signature verification is constant-result: on failure the payload and
 //!   signature are discarded and only an error variant is returned.
 
 use crate::error::WebauthnError;
 
-/// Parsed COSE public key (EC2 or RSA).
+/// Parsed COSE public key (EC2, RSA, or OKP).
 #[derive(Debug, Clone)]
 pub enum CosePublicKey {
-    /// Elliptic-curve (P-256) key with affine coordinates `x` and `y`.
+    /// Elliptic-curve key with affine coordinates `x` and `y`
+    /// (P-256: 32-byte coordinates; P-384: 48-byte coordinates — the curve
+    /// is bound to the declared algorithm, see [`parse_cose_key`]).
     Ec2 {
-        /// X coordinate, big-endian, 32 bytes for P-256.
+        /// X coordinate, big-endian.
         x: Vec<u8>,
-        /// Y coordinate, big-endian, 32 bytes for P-256.
+        /// Y coordinate, big-endian.
         y: Vec<u8>,
     },
     /// RSA key with modulus `n` and public exponent `e`.
@@ -29,9 +33,14 @@ pub enum CosePublicKey {
         /// RSA public exponent, big-endian (typically 0x010001).
         e: Vec<u8>,
     },
+    /// Octet-key-pair key (Ed25519): the raw 32-byte public key.
+    Okp {
+        /// Raw public key bytes (exactly 32 bytes for Ed25519).
+        id: Vec<u8>,
+    },
 }
 
-/// COSE key type: Octet Key Pair (Ed25519 et al.). Not supported.
+/// COSE key type: Octet Key Pair (Ed25519).
 pub const COSE_KTY_OKP: i64 = 1;
 /// COSE key type: Elliptic-Curve key pair with x/y coordinates.
 pub const COSE_KTY_EC2: i64 = 2;
@@ -40,6 +49,10 @@ pub const COSE_KTY_RSA: i64 = 3;
 
 /// COSE algorithm: ECDSA w/ SHA-256 on P-256.
 pub const COSE_ALG_ES256: i32 = -7;
+/// COSE algorithm: EdDSA (Ed25519).
+pub const COSE_ALG_EDDSA: i32 = -8;
+/// COSE algorithm: ECDSA w/ SHA-384 on P-384.
+pub const COSE_ALG_ES384: i32 = -35;
 /// COSE algorithm: RSASSA-PKCS1-v1_5 w/ SHA-256.
 pub const COSE_ALG_RS256: i32 = -257;
 
@@ -47,7 +60,7 @@ pub const COSE_ALG_RS256: i32 = -257;
 const COSE_KEY_KTY: i64 = 1;
 /// COSE key map parameter label: algorithm (`alg`).
 const COSE_KEY_ALG: i64 = 2;
-/// COSE key map parameter label: curve (EC2) or modulus `n` (RSA).
+/// COSE key map parameter label: curve (EC2/OKP) or modulus `n` (RSA).
 const COSE_KEY_CRV_N: i64 = -1;
 /// COSE key map parameter label: x coordinate (EC2) or exponent `e` (RSA).
 const COSE_KEY_X_E: i64 = -2;
@@ -56,6 +69,10 @@ const COSE_KEY_Y: i64 = -3;
 
 /// COSE curve identifier: NIST P-256 (secp256r1).
 const COSE_CRV_P256: i64 = 1;
+/// COSE curve identifier: NIST P-384 (secp384r1).
+pub const COSE_CRV_P384: i64 = 2;
+/// COSE curve identifier: Ed25519 (RFC 8032 / RFC 9053).
+pub const COSE_CRV_ED25519: i64 = 6;
 
 /// Parse a CBOR integer from a value, handling both positive and negative.
 fn cbor_i64(val: &ciborium::Value) -> Option<i64> {
@@ -105,24 +122,28 @@ pub fn cbor_map_entries(val: &ciborium::Value) -> Option<Vec<(i64, ciborium::Val
 
 /// Parse a COSE key from its CBOR encoding (RFC 9052).
 ///
-/// Supports EC2/P-256 (`kty = 2`, `crv = 1`) and RSA (`kty = 3`). OKP keys
-/// return [`WebauthnError::UnsupportedAlgorithm`]; unknown key types return
-/// [`WebauthnError::VerificationFailed`].
+/// Supports EC2/P-256 (`kty = 2`, `crv = 1`), EC2/P-384 (`kty = 2`,
+/// `crv = 2`), RSA (`kty = 3`), and OKP/Ed25519 (`kty = 1`, `crv = 6`).
+/// Unknown key types return [`WebauthnError::VerificationFailed`].
 ///
 /// # Security notes / threat assumptions
 ///
 /// - `cose_bytes` is attacker-controlled input (it arrives inside authenticator
 ///   data). Parsing must never panic on arbitrary bytes; malformed input always
 ///   yields `Err`.
-/// - The returned `alg` is whatever the key declares. Callers must check it is
-///   one of [`COSE_ALG_ES256`] / [`COSE_ALG_RS256`] *and* pass it to
-///   [`verify_cose_signature`], which cross-checks key type against algorithm
-///   (e.g. an RSA key claiming `alg = -7` is rejected).
-/// - Coordinate/modulus lengths are not pre-validated here; `ring` rejects
-///   invalid lengths during signature verification.
+/// - The declared algorithm is *bound to the key material at parse time*
+///   (algorithm-confusion defense, REQ-WA-107/146): an EC2 key must declare
+///   `crv = 1` with `alg = ES256` or `crv = 2` with `alg = ES384` — any other
+///   pairing (e.g. a P-256 key claiming `alg = -35`) is rejected with
+///   [`WebauthnError::UnsupportedAlgorithm`]. OKP keys must declare
+///   `crv = 6` with `alg = EdDSA`. Callers must still pass the parsed `alg`
+///   to [`verify_cose_signature`], which re-checks key type against
+///   algorithm.
+/// - Coordinate/modulus/key lengths are not pre-validated here; `ring`
+///   rejects invalid points and keys at verify time.
 ///
 /// # Requirements
-/// REQ-WA-003, REQ-WA-100, REQ-WA-107
+/// REQ-WA-003, REQ-WA-100, REQ-WA-107, REQ-WA-140, REQ-WA-141, REQ-WA-146
 ///
 /// Returns the COSE algorithm identifier and the parsed key components.
 pub fn parse_cose_key(cose_bytes: &[u8]) -> Result<(i32, CosePublicKey), WebauthnError> {
@@ -171,7 +192,14 @@ pub fn parse_cose_key(cose_bytes: &[u8]) -> Result<(i32, CosePublicKey), Webauth
             let crv = crv.ok_or_else(|| {
                 WebauthnError::VerificationFailed("EC2 key missing 'crv'".to_string())
             })?;
-            if crv != COSE_CRV_P256 {
+            // Algorithm/curve binding (REQ-WA-146): a P-256 key claiming
+            // ES384 — or a P-384 key claiming ES256 — is rejected here,
+            // before any signature work.
+            let curve_ok = matches!(
+                (crv, alg),
+                (COSE_CRV_P256, COSE_ALG_ES256) | (COSE_CRV_P384, COSE_ALG_ES384)
+            );
+            if !curve_ok {
                 return Err(WebauthnError::UnsupportedAlgorithm(alg));
             }
             let x = x.ok_or_else(|| {
@@ -191,7 +219,16 @@ pub fn parse_cose_key(cose_bytes: &[u8]) -> Result<(i32, CosePublicKey), Webauth
             })?;
             Ok((alg, CosePublicKey::Rsa { n, e }))
         }
-        COSE_KTY_OKP => Err(WebauthnError::UnsupportedAlgorithm(alg)),
+        COSE_KTY_OKP => {
+            // OKP is only defined in this kit for Ed25519 (crv 6, alg -8).
+            if crv != Some(COSE_CRV_ED25519) || alg != COSE_ALG_EDDSA {
+                return Err(WebauthnError::UnsupportedAlgorithm(alg));
+            }
+            let id = x.ok_or_else(|| {
+                WebauthnError::VerificationFailed("OKP key missing public key bytes".to_string())
+            })?;
+            Ok((alg, CosePublicKey::Okp { id }))
+        }
         other => Err(WebauthnError::VerificationFailed(format!(
             "Unsupported COSE key type: {other}"
         ))),
@@ -203,16 +240,18 @@ pub fn parse_cose_key(cose_bytes: &[u8]) -> Result<(i32, CosePublicKey), Webauth
 /// # Security notes / threat assumptions
 ///
 /// - `alg` is matched strictly: `ES256` requires an [`CosePublicKey::Ec2`]
-///   key, `RS256` requires [`CosePublicKey::Rsa`]; any mismatch is an error,
-///   never a fallback.
+///   key, `ES384` an `Ec2` key with P-384 coordinates, `EdDSA` an
+///   [`CosePublicKey::Okp`] key, `RS256` requires [`CosePublicKey::Rsa`];
+///   any mismatch is an error, never a fallback.
 /// - `signed_data` and `signature` are attacker-controlled. Verification uses
 ///   `ring`'s constant-time implementations
-///   (`ECDSA_P256_SHA256_FIXED`, `RSA_PKCS1_2048_8192_SHA256`).
+///   (`ECDSA_P256_SHA256_FIXED`, `ECDSA_P384_SHA384_FIXED`, `ED25519`,
+///   `RSA_PKCS1_2048_8192_SHA256`).
 /// - RSA keys smaller than 2048 bits are rejected by `ring`'s
 ///   `RSA_PKCS1_2048_8192_SHA256` parameters.
 ///
 /// # Requirements
-/// REQ-WA-106, REQ-WA-107
+/// REQ-WA-106, REQ-WA-107, REQ-WA-140, REQ-WA-141
 ///
 /// Returns `Ok(())` if and only if the signature verifies over `signed_data`.
 pub fn verify_cose_signature(
@@ -240,6 +279,40 @@ pub fn verify_cose_signature(
                 &signature::ECDSA_P256_SHA256_FIXED,
                 &public_key_bytes,
             );
+            public_key
+                .verify(signed_data, signature)
+                .map_err(|_| WebauthnError::SignatureVerificationFailed)?;
+            Ok(())
+        }
+        COSE_ALG_ES384 => {
+            let CosePublicKey::Ec2 { x, y } = public_key else {
+                return Err(WebauthnError::VerificationFailed(
+                    "EC2 key expected for ES384".to_string(),
+                ));
+            };
+
+            let mut public_key_bytes = Vec::with_capacity(1 + x.len() + y.len());
+            public_key_bytes.push(0x04);
+            public_key_bytes.extend_from_slice(x);
+            public_key_bytes.extend_from_slice(y);
+
+            let public_key = signature::UnparsedPublicKey::new(
+                &signature::ECDSA_P384_SHA384_FIXED,
+                &public_key_bytes,
+            );
+            public_key
+                .verify(signed_data, signature)
+                .map_err(|_| WebauthnError::SignatureVerificationFailed)?;
+            Ok(())
+        }
+        COSE_ALG_EDDSA => {
+            let CosePublicKey::Okp { id } = public_key else {
+                return Err(WebauthnError::VerificationFailed(
+                    "OKP key expected for EdDSA".to_string(),
+                ));
+            };
+
+            let public_key = signature::UnparsedPublicKey::new(&signature::ED25519, id);
             public_key
                 .verify(signed_data, signature)
                 .map_err(|_| WebauthnError::SignatureVerificationFailed)?;
@@ -370,6 +443,8 @@ impl RsaPublicKeyDer<'_> {
 pub fn alg_to_name(alg: i32) -> &'static str {
     match alg {
         COSE_ALG_ES256 => "ES256",
+        COSE_ALG_ES384 => "ES384",
+        COSE_ALG_EDDSA => "EdDSA",
         COSE_ALG_RS256 => "RS256",
         _ => "unknown",
     }
@@ -435,13 +510,32 @@ pub(crate) mod tests {
 
     /// Build a COSE EC2/P-256 key map around the given coordinates.
     pub(crate) fn build_cose_ec2_key(x: &[u8], y: &[u8]) -> Vec<u8> {
+        build_cose_ec2_key_alg(COSE_CRV_P256, COSE_ALG_ES256, x, y)
+    }
+
+    /// Build a COSE EC2 key map with an explicit curve and algorithm.
+    pub(crate) fn build_cose_ec2_key_alg(crv: i64, alg: i32, x: &[u8], y: &[u8]) -> Vec<u8> {
         use ciborium::Value;
         let map = vec![
             (Value::Integer(1.into()), Value::Integer(2.into())),
-            (Value::Integer(2.into()), Value::Integer((-7).into())),
-            (Value::Integer((-1).into()), Value::Integer(1.into())),
+            (Value::Integer(2.into()), Value::Integer(alg.into())),
+            (Value::Integer((-1).into()), Value::Integer(crv.into())),
             (Value::Integer((-2).into()), Value::Bytes(x.to_vec())),
             (Value::Integer((-3).into()), Value::Bytes(y.to_vec())),
+        ];
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();
+        buf
+    }
+
+    /// Build a COSE OKP/Ed25519 key map around the raw public key bytes.
+    pub(crate) fn build_cose_okp_key(id: &[u8]) -> Vec<u8> {
+        use ciborium::Value;
+        let map = vec![
+            (Value::Integer(1.into()), Value::Integer(1.into())),
+            (Value::Integer(2.into()), Value::Integer((-8).into())),
+            (Value::Integer((-1).into()), Value::Integer(6.into())),
+            (Value::Integer((-2).into()), Value::Bytes(id.to_vec())),
         ];
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();
@@ -867,8 +961,251 @@ pub(crate) mod tests {
     #[test]
     fn alg_to_name_covers_known_and_unknown() {
         assert_eq!(alg_to_name(COSE_ALG_ES256), "ES256");
+        assert_eq!(alg_to_name(COSE_ALG_ES384), "ES384");
+        assert_eq!(alg_to_name(COSE_ALG_EDDSA), "EdDSA");
         assert_eq!(alg_to_name(COSE_ALG_RS256), "RS256");
         assert_eq!(alg_to_name(0), "unknown");
+    }
+
+    // ---- ES384 / EdDSA (REQ-WA-140, REQ-WA-141) ----
+
+    /// ES384 roundtrip: a real P-384 signature verifies through the ES384
+    /// arm (fixed-width ECDSA + SHA-384); a tampered message fails closed.
+    #[test]
+    fn verify_es384_real_signature_roundtrip() {
+        use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P384_SHA384_FIXED_SIGNING};
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &rng).unwrap();
+        let key_pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+                .unwrap();
+
+        let pub_bytes = key_pair.public_key().as_ref();
+        assert_eq!(pub_bytes.len(), 97); // 0x04 || X(48) || Y(48)
+        let x = pub_bytes[1..49].to_vec();
+        let y = pub_bytes[49..97].to_vec();
+        let key = CosePublicKey::Ec2 { x, y };
+
+        let message = b"webauthn-kit es384 vector";
+        let signature = key_pair.sign(&rng, message).unwrap();
+        assert_eq!(signature.as_ref().len(), 96); // fixed-width r||s
+
+        assert!(verify_cose_signature(COSE_ALG_ES384, &key, message, signature.as_ref()).is_ok());
+
+        let mut tampered = *message;
+        tampered[0] ^= 0x01;
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_ES384, &key, &tampered, signature.as_ref()),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+
+        // ES384 signature under the ES256 arm must fail (wrong curve).
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_ES256, &key, message, signature.as_ref()),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+    }
+
+    /// EdDSA roundtrip: a real Ed25519 signature verifies through the
+    /// EdDSA arm; a tampered message fails closed.
+    #[test]
+    fn verify_eddsa_real_signature_roundtrip() {
+        use ring::signature::{Ed25519KeyPair, KeyPair as _};
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+        let public = key_pair.public_key().as_ref().to_vec();
+        assert_eq!(public.len(), 32);
+        let key = CosePublicKey::Okp { id: public };
+
+        let message = b"webauthn-kit ed25519 vector";
+        let signature = key_pair.sign(message);
+        assert_eq!(signature.as_ref().len(), 64);
+
+        assert!(verify_cose_signature(COSE_ALG_EDDSA, &key, message, signature.as_ref()).is_ok());
+
+        let mut tampered = *message;
+        tampered[0] ^= 0x01;
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_EDDSA, &key, &tampered, signature.as_ref()),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+    }
+
+    /// REQ-WA-140: an EC2 key declaring `alg = -35` must carry P-384
+    /// coordinates; parse must succeed and round-trip them.
+    #[test]
+    fn parse_cose_p384_key() {
+        let x = vec![0xCC; 48];
+        let y = vec![0xDD; 48];
+        let cose_key = build_cose_ec2_key_alg(COSE_CRV_P384, COSE_ALG_ES384, &x, &y);
+
+        let (alg, key) = parse_cose_key(&cose_key).unwrap();
+        assert_eq!(alg, COSE_ALG_ES384);
+        match key {
+            CosePublicKey::Ec2 { x: kx, y: ky } => {
+                assert_eq!(kx, x);
+                assert_eq!(ky, y);
+            }
+            _ => panic!("Expected EC2 key"),
+        }
+    }
+
+    /// REQ-WA-141: an OKP key declaring EdDSA parses to the `Okp` variant.
+    #[test]
+    fn parse_cose_okp_ed25519_key() {
+        let id = vec![0x42u8; 32];
+        let cose_key = build_cose_okp_key(&id);
+
+        let (alg, key) = parse_cose_key(&cose_key).unwrap();
+        assert_eq!(alg, COSE_ALG_EDDSA);
+        match key {
+            CosePublicKey::Okp { id: kid } => assert_eq!(kid, id),
+            _ => panic!("Expected OKP key"),
+        }
+    }
+
+    // ---- algorithm-confusion regression tests (the RS256 bug class) ----
+
+    /// A P-256 key (crv 1, 32-byte coordinates) claiming `alg = -35`
+    /// (ES384) must be rejected at parse time — never fall through to a
+    /// P-256 verifier.
+    #[test]
+    fn parse_p256_key_claiming_es384_rejected() {
+        let cose_key =
+            build_cose_ec2_key_alg(COSE_CRV_P256, COSE_ALG_ES384, &[0xAA; 32], &[0xBB; 32]);
+        assert!(matches!(
+            parse_cose_key(&cose_key),
+            Err(WebauthnError::UnsupportedAlgorithm(COSE_ALG_ES384))
+        ));
+    }
+
+    /// A P-384 key (crv 2) claiming `alg = -7` (ES256) must be rejected.
+    #[test]
+    fn parse_p384_key_claiming_es256_rejected() {
+        let cose_key =
+            build_cose_ec2_key_alg(COSE_CRV_P384, COSE_ALG_ES256, &[0xAA; 48], &[0xBB; 48]);
+        assert!(matches!(
+            parse_cose_key(&cose_key),
+            Err(WebauthnError::UnsupportedAlgorithm(COSE_ALG_ES256))
+        ));
+    }
+
+    /// An OKP key claiming a non-EdDSA algorithm is rejected; so is an OKP
+    /// key with a non-Ed25519 curve parameter.
+    #[test]
+    fn parse_okp_claiming_other_algorithms_rejected() {
+        // OKP structure with alg = ES256.
+        let bad_alg = cose_key_from(vec![
+            (1, ciborium::Value::Integer(1.into())),
+            (2, ciborium::Value::Integer((-7).into())),
+            (-1, ciborium::Value::Integer(6.into())),
+            (-2, ciborium::Value::Bytes(vec![0x42; 32])),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&bad_alg),
+            Err(WebauthnError::UnsupportedAlgorithm(COSE_ALG_ES256))
+        ));
+
+        // EdDSA alg but wrong curve (X25519 is 4, not 6).
+        let bad_crv = cose_key_from(vec![
+            (1, ciborium::Value::Integer(1.into())),
+            (2, ciborium::Value::Integer((-8).into())),
+            (-1, ciborium::Value::Integer(4.into())),
+            (-2, ciborium::Value::Bytes(vec![0x42; 32])),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&bad_crv),
+            Err(WebauthnError::UnsupportedAlgorithm(COSE_ALG_EDDSA))
+        ));
+    }
+
+    /// OKP key presented to the ES256 arm and EC2 key presented to the
+    /// EdDSA arm: key-type/algorithm mismatches fail closed.
+    #[test]
+    fn verify_okp_ec2_type_mismatches_rejected() {
+        let okp = CosePublicKey::Okp { id: vec![0x42; 32] };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_ES256, &okp, b"data", &[0u8; 64]),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+
+        let ec2 = CosePublicKey::Ec2 {
+            x: vec![0xAA; 32],
+            y: vec![0xBB; 32],
+        };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_EDDSA, &ec2, b"data", &[0u8; 64]),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+    }
+
+    /// ES384 key material is length-checked by `ring`: a 65-byte point
+    /// under the P-384 verifier fails closed (no panic).
+    #[test]
+    fn verify_es384_short_point_fails_closed() {
+        let short = CosePublicKey::Ec2 {
+            x: vec![0xAA; 32], // P-256-sized coordinates
+            y: vec![0xBB; 32],
+        };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_ES384, &short, b"data", &[0u8; 96]),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+    }
+
+    /// Ed25519 keys must be exactly 32 bytes; anything else fails closed
+    /// at `ring`.
+    #[test]
+    fn verify_eddsa_wrong_key_length_fails_closed() {
+        let long = CosePublicKey::Okp { id: vec![0x42; 31] };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_EDDSA, &long, b"data", &[0u8; 64]),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+        let short_sig = CosePublicKey::Okp { id: vec![0x42; 32] };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_EDDSA, &short_sig, b"data", &[0u8; 63]),
+            Err(WebauthnError::SignatureVerificationFailed)
+        ));
+    }
+
+    /// Remaining parse/verify error paths: unknown CBOR labels in a COSE
+    /// key map are ignored; an OKP key without key bytes is rejected; an
+    /// OKP key under the ES384 arm is rejected.
+    #[test]
+    fn cose_key_unknown_labels_and_okp_error_paths() {
+        // Unknown labels are ignored during parsing.
+        let with_extra = cose_key_from(vec![
+            (1, ciborium::Value::Integer(1.into())),
+            (2, ciborium::Value::Integer((-8).into())),
+            (-1, ciborium::Value::Integer(6.into())),
+            (-2, ciborium::Value::Bytes(vec![0x42; 32])),
+            (99, ciborium::Value::Text("ignored".to_string())),
+        ]);
+        let (alg, _) = parse_cose_key(&with_extra).unwrap();
+        assert_eq!(alg, COSE_ALG_EDDSA);
+
+        // OKP/EdDSA without the raw key bytes (-2) is rejected.
+        let no_bytes = cose_key_from(vec![
+            (1, ciborium::Value::Integer(1.into())),
+            (2, ciborium::Value::Integer((-8).into())),
+            (-1, ciborium::Value::Integer(6.into())),
+        ]);
+        assert!(matches!(
+            parse_cose_key(&no_bytes),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
+
+        // OKP key presented to the ES384 arm: key-type mismatch.
+        let okp = CosePublicKey::Okp { id: vec![0x42; 32] };
+        assert!(matches!(
+            verify_cose_signature(COSE_ALG_ES384, &okp, b"data", &[0u8; 96]),
+            Err(WebauthnError::VerificationFailed(_))
+        ));
     }
 
     /// RS256 end-to-end: a real 2048-bit RSA signature verifies through the
