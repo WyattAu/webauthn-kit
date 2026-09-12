@@ -5,6 +5,18 @@ Changelog](https://keepachangelog.com/) — versions follow [semver](https://sem
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-12
+
+### Added
+
+- `tests/config_matrix.rs` — per-knob behavior matrix for all 9
+  `WebauthnConfig` fields. Gap fill: the six options-conveyance knobs
+  (`rp_name`, advertised `allowed_algorithms`, `challenge_timeout_secs`,
+  `resident_key`, `attestation_conveyance`, UV preference) had no
+  observable assertion; verify-time enforcement was verified already
+  covered in `src/protocol.rs` / `src/attestation.rs` / `tests/fuzz.rs`.
+  No dead knobs found.
+
 ## [0.3.0] - 2026-09-12
 
 ### Added
