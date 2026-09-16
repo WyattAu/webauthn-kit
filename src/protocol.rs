@@ -2223,4 +2223,86 @@ mod tests {
         );
         assert!(matches!(result, Err(WebauthnError::AttestationError(_))));
     }
+
+    /// Truncation checks in `parse_authenticator_data` are exact and
+    /// stage-specific: a blob at the minimum length passes the prefix
+    /// bound and fails at the *next* stage, and a blob below the real
+    /// bound (but above any mutated one) is rejected at the prefix stage.
+    #[test]
+    fn authenticator_data_truncation_boundaries_are_exact() {
+        // 37 header + 16 AAGUID + 2 credential-length = 55 bytes: passes
+        // the prefix check exactly, then fails at the public-key stage.
+        let at_minimum = build_auth_data_with_credential("localhost", FLAG_AT, 0, &[], &[]);
+        assert_eq!(at_minimum.len(), 55);
+        let err = parse_authenticator_data(&at_minimum)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("public key"),
+            "exact-prefix blob must reach the public-key stage: {err}"
+        );
+
+        // 40 bytes with AT: below the real prefix bound (55) but above the
+        // header bound (37) — must be rejected at the AAGUID+length stage.
+        let mut short = vec![0u8; 32];
+        short.push(FLAG_AT);
+        short.extend_from_slice(&[0u8; 7]);
+        let err = parse_authenticator_data(&short).unwrap_err().to_string();
+        assert!(
+            err.contains("AAGUID + length"),
+            "40-byte AT blob must fail at the prefix stage: {err}"
+        );
+
+        // Exact-fit credential ID: 37 + 16 + 2 + 2 = 57 bytes, credential
+        // id fully present, public-key stage reached.
+        let cred_exact =
+            build_auth_data_with_credential("localhost", FLAG_AT, 0, &[0x01, 0x02], &[]);
+        assert_eq!(cred_exact.len(), 57);
+        let err = parse_authenticator_data(&cred_exact)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("public key"),
+            "exact-fit credential id must reach the public-key stage: {err}"
+        );
+    }
+
+    /// Registration auth data without the AT flag must be rejected with
+    /// the specific attested-credential error — not by a downstream,
+    /// looser check. Pins the FLAG_AT gate itself.
+    #[test]
+    fn registration_without_attested_credential_flag_names_the_missing_flag() {
+        let auth_data = build_auth_data_with_credential(
+            "localhost",
+            FLAG_UP, // no FLAG_AT
+            0,
+            &[],
+            &[],
+        );
+        let att_obj = build_attestation_object(&auth_data);
+
+        let challenge = generate_challenge_bytes();
+        let client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": base64_encode_urlsafe(&challenge),
+            "origin": "http://localhost:8080",
+        });
+        let client_data_b64 = base64_encode_urlsafe(&serde_json::to_vec(&client_data).unwrap());
+
+        let result = verify_registration(
+            &challenge,
+            &client_data_b64,
+            &base64_encode_urlsafe(&att_obj),
+            "",
+            "localhost",
+            &["http://localhost:8080".to_string()],
+            &AttestationPolicy::default(),
+            &CredentialPolicy::default(),
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Attested Credential Data flag not set"),
+            "AT-less registration must be rejected at the flag gate: {err}"
+        );
+    }
 }

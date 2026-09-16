@@ -163,6 +163,16 @@ CA-chain policy/revocation are future work — see THREAT-MODEL.md.
 | `std`     | yes     | Timed challenge store (`std::time` clock).   |
 | `serde`   | no      | Serde (de)serialization for the wire DTOs.   |
 
+## Mutation testing
+
+`cargo mutants` (config in [`.cargo/mutants.toml`](.cargo/mutants.toml), not run in CI):
+
+- **2026-09-16 baseline: 411 mutants, 355 caught, 12 missed, 44 unviable = 96.7% kill score** (lower bound; manual spot-checks catch at least one reported miss).
+- Scope: all `src/` modules (`attestation.rs`, `crypto.rs`, `protocol.rs`, `challenge.rs`, `aaguid.rs`, `policy.rs`, `credential.rs`); `tests/`, `benches/`, and `fuzz/` excluded from mutation.
+- The 12 remaining misses are triaged in the `.cargo/mutants.toml` comment: two equivalent mutants, eight X.509-fixture-dependent paths in `attestation.rs` (follow-up scope), and one path needing a full packed-attestation fixture.
+- New tests added during this baseline: DER SEQUENCE length-form boundaries and 0x80-length INTEGER long form (`crypto.rs`), authenticator-data truncation-stage pinning and the FLAG_AT registration gate (`protocol.rs`), default-clock wall-time recording, strict expiry boundary, and Debug secret omission (`challenge.rs`), and odd-length AAGUID rejection (`aaguid.rs`).
+- Reproduce: `CARGO_TARGET_DIR=/var/tmp/target-mutants-webauthn-kit cargo mutants --in-place --no-shuffle --all-features` (~5 min). Use `--in-place`: copy-mode `-j 4` reuses stale test binaries across parallel scenarios and reports false misses.
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or

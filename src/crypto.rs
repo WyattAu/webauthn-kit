@@ -741,6 +741,39 @@ pub(crate) mod tests {
         assert_eq!(cbor_bytes(&v), None);
     }
 
+    /// REQ-WA-202: the SEQUENCE wrapper must pick the correct DER length
+    /// form at every boundary — short form below 0x80, `0x81` long form at
+    /// 0x80..=0xFF, `0x82` long form at 0x100 and above — and preserve the
+    /// wrapped content. Mutants of the header-size arithmetic produce
+    /// structurally invalid DER for real RSA keys (content length > 0x100).
+    #[test]
+    fn der_sequence_header_forms_at_length_boundaries() {
+        for (content_len, header_len) in [(0x7Fusize, 2usize), (0x80, 3), (0xFF, 3), (0x100, 4)] {
+            let mut buf = vec![0xCBu8; content_len];
+            RsaPublicKeyDer::encode_sequence_in_place(&mut buf);
+            assert_eq!(
+                buf.len(),
+                content_len + header_len,
+                "content_len {content_len:#x}: wrong total length"
+            );
+            assert_eq!(buf[0], 0x30, "content_len {content_len:#x}: SEQUENCE tag");
+            match header_len {
+                2 => assert_eq!(buf[1] as usize, content_len, "short-form length"),
+                3 => {
+                    assert_eq!(buf[1], 0x81, "content_len {content_len:#x}: 0x81 form");
+                    assert_eq!(buf[2] as usize, content_len);
+                }
+                4 => {
+                    assert_eq!(buf[1], 0x82, "content_len {content_len:#x}: 0x82 form");
+                    assert_eq!(((buf[2] as usize) << 8) | buf[3] as usize, content_len);
+                }
+                _ => unreachable!(),
+            }
+            // Content shifted right intact behind the header.
+            assert!(buf[header_len..].iter().all(|&b| b == 0xCB));
+        }
+    }
+
     /// REQ-WA-202: DER INTEGER encoding must handle the all-zero value
     /// (single 0x00 octet), strip leading zeros, and prepend 0x00 for
     /// high-bit-set values — all without panicking.
@@ -765,6 +798,14 @@ pub(crate) mod tests {
         // the encoder stays total and `ring` rejects the key at verify time.
         RsaPublicKeyDer::encode_integer(&mut buf, &[]);
         assert_eq!(buf, vec![0x02, 0x00]);
+
+        buf.clear();
+        // Exactly 0x80 content bytes: the length must take the `0x81` long
+        // form (a bare 0x80 length octet would be indefinite-length DER).
+        RsaPublicKeyDer::encode_integer(&mut buf, &[0x01u8; 0x80]);
+        assert_eq!(&buf[..3], &[0x02, 0x81, 0x80]);
+        assert_eq!(buf.len(), 3 + 0x80);
+        assert!(buf[3..].iter().all(|&b| b == 0x01));
     }
 
     // ---- error paths of parse_cose_key / verify_cose_signature ----

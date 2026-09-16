@@ -322,6 +322,15 @@ mod tests {
         assert_eq!(&samsung[8..], &[0u8; 8]);
     }
 
+    /// An odd number of hex digits (after dash removal) must panic with
+    /// the crate's message — not an index-out-of-bounds from reading the
+    /// missing second nibble.
+    #[test]
+    #[should_panic(expected = "AAGUID constant is not a 16-byte UUID")]
+    fn uuid_rejects_odd_length_with_named_panic() {
+        let _ = uuid("53414d5");
+    }
+
     /// Uppercase hex digits must be accepted (case-insensitive UUID text).
     #[test]
     fn uuid_accepts_uppercase_hex() {

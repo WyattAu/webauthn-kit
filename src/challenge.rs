@@ -781,4 +781,110 @@ mod tests {
             ]
         );
     }
+
+    /// The default (real) clock path must record creation times the
+    /// expiry math treats as fresh: a challenge consumed immediately with
+    /// a generous timeout succeeds. Mutants of `unix_now` (returning 0,
+    /// 1, or -1) make every challenge look centuries old and fail here.
+    #[test]
+    fn default_clock_store_consumes_fresh_challenges() {
+        let mut store = ChallengeStore::new();
+        let config = test_config();
+
+        store.store_registration_challenge("reg-ch", "alice", vec![1u8; 32]);
+        store
+            .consume_registration_challenge("reg-ch", 300)
+            .expect("fresh registration challenge must consume on the real clock");
+
+        let (auth_id, _options) = store.generate_authentication_challenge(&config, Vec::new());
+        store.store_authentication_challenge(&auth_id, "alice", vec![0u8; 32], vec![]);
+        store
+            .consume_authentication_challenge(&auth_id, 300)
+            .expect("fresh authentication challenge must consume on the real clock");
+    }
+
+    /// The default clock must be the real system clock: recorded creation
+    /// times land in a ±5 s window around wall-clock now. (Store and
+    /// consume read the same injected closure, so expiry math alone cannot
+    /// distinguish a constant-time mutant — the recorded value can.)
+    #[test]
+    fn default_clock_records_current_unix_time() {
+        let mut store = ChallengeStore::new();
+        store.store_registration_challenge("c", "alice", vec![0u8; 32]);
+        let created = store.registration_challenges["c"].created_at;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        assert!(
+            (now - 5..=now + 5).contains(&created),
+            "created_at {created} must be wall-clock now (~{now})"
+        );
+    }
+
+    /// Expiry is *strictly* greater: a challenge consumed at exactly
+    /// `timeout_secs` seconds of age is still valid; one second later it
+    /// is expired.
+    #[test]
+    fn expiry_boundary_is_strictly_greater_than_timeout() {
+        let config = test_config();
+
+        let mut store = ChallengeStore::with_clock(clock_at(1_000));
+        store.store_registration_challenge("reg-ch", "alice", vec![1u8; 32]);
+        // Rebind the clock to exactly timeout age: elapsed == timeout.
+        store.now = Arc::new(|| 1_300);
+        store
+            .consume_registration_challenge("reg-ch", 300)
+            .expect("challenge aged exactly timeout_secs must still consume");
+
+        let mut store = ChallengeStore::with_clock(clock_at(1_000));
+        let (auth_id, _options) = store.generate_authentication_challenge(&config, Vec::new());
+        store.store_authentication_challenge(&auth_id, "alice", vec![0u8; 32], vec![]);
+        // Exactly timeout age: still valid (strict >).
+        store.now = Arc::new(|| 1_300);
+        store
+            .consume_authentication_challenge(&auth_id, 300)
+            .expect("authentication challenge aged exactly timeout_secs must still consume");
+
+        // One second past: expired.
+        let mut store = ChallengeStore::with_clock(clock_at(1_000));
+        let (auth_id, _options) = store.generate_authentication_challenge(&config, Vec::new());
+        store.store_authentication_challenge(&auth_id, "alice", vec![0u8; 32], vec![]);
+        store.now = Arc::new(|| 1_301);
+        assert!(
+            matches!(
+                store.consume_authentication_challenge(&auth_id, 300),
+                Err(WebauthnError::ChallengeExpired)
+            ),
+            "challenge aged timeout_secs + 1 must be expired"
+        );
+    }
+
+    /// The Debug impl deliberately omits challenge contents (secrets in
+    /// transit): rendered output shows only counters, never the pending
+    /// challenge ids or bytes.
+    #[test]
+    fn debug_rendering_omits_challenge_secrets() {
+        let mut store = ChallengeStore::with_clock(clock_at(1_000));
+        let config = test_config();
+        let (reg_id, reg_options) =
+            store.generate_registration_challenge(&config, "alice", "Alice", &[]);
+        let reg_bytes = crate::crypto::base64_decode_urlsafe(&reg_options.challenge)
+            .expect("options challenge must be base64url");
+        store.store_registration_challenge(&reg_id, "alice", reg_bytes);
+        let (auth_id, auth_options) = store.generate_authentication_challenge(&config, Vec::new());
+        store.store_authentication_challenge(&auth_id, "alice", vec![0xAB; 32], vec![]);
+
+        let rendered = format!("{store:?}");
+        assert!(rendered.contains("ChallengeStore"), "{rendered}");
+        assert!(
+            !rendered.contains(&reg_id) && !rendered.contains(&auth_id),
+            "challenge ids must not appear in Debug: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&reg_options.challenge)
+                && !rendered.contains(&auth_options.challenge),
+            "challenge values must not appear in Debug: {rendered}"
+        );
+    }
 }

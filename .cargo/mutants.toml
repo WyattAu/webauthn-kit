@@ -1,0 +1,31 @@
+# cargo-mutants configuration.
+# Config only — do NOT run in CI (too slow for routine verification).
+#
+# Baseline (2026-09-16, --all-features): 411 mutants, 355 caught,
+# 12 missed, 44 unviable = 96.7% kill score (lower bound — spot checks
+# show some "missed" outcomes are stale-binary artifacts of the harness,
+# e.g. crypto.rs:411 was verified caught when applied manually).
+#
+# The 12 reported misses, triaged:
+#   * aaguid.rs:247 `|` -> `^` — equivalent: the XOR/OR operands are
+#     disjoint bits (nibble << 4 has a zero low nibble), so OR == XOR.
+#   * attestation.rs:193 AttestationPolicy::strict — equivalent by
+#     implementation: strict() IS Self::default().
+#   * attestation.rs (8): verify_fido_u2f boundary, Cert::from_der key-
+#     usage checks, parse_basic_constraints, der_content bit math, and
+#     verify_chain flag combinations — all require crafted X.509 fixtures
+#     (rcgen is available as a dev-dep) to reach; recorded as follow-up
+#     scope, not fixable with cheap targeted tests.
+#   * protocol.rs:360 delete match arm 3 (attStmt) — unobservable with
+#     "none" attestation (the statement is unused); killing it requires a
+#     full packed-attestation fixture (cert + signature).
+#
+# History: first copy-mode runs (`-j 4`, shared CARGO_TARGET_DIR)
+# produced 24-31 "missed" — stale test binaries reused across parallel
+# scenarios. In-place sequential is the reliable protocol (~5 min).
+#
+# Reproduce:
+#   CARGO_TARGET_DIR=/var/tmp/target-mutants-webauthn-kit \
+#     cargo mutants --in-place --no-shuffle --all-features
+timeout_multiplier = 4.0
+exclude_globs = ["tests/*", "benches/*", "fuzz/*"]
