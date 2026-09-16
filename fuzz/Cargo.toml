@@ -1,0 +1,32 @@
+[package]
+name = "webauthn-kit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+webauthn-kit = { path = ".." }
+
+[[bin]]
+name = "fuzz_verify_registration"
+path = "fuzz_targets/fuzz_verify_registration.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_verify_authentication"
+path = "fuzz_targets/fuzz_verify_authentication.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_cose_key"
+path = "fuzz_targets/fuzz_cose_key.rs"
+test = false
+doc = false

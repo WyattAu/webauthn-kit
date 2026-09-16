@@ -13,3 +13,20 @@ jobs:
       loom: false
       wasm: false
       miri: false
+
+  # Fuzz smoke: 60s per untrusted-input target. Full runs are local/nightly;
+  # this gate catches regressions on the WebAuthn ceremony parsing early.
+  fuzz-smoke:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz --locked
+      - name: registration smoke (60s)
+        run: cargo fuzz run fuzz_verify_registration -- -max_total_time=60 -max_len=16384 -detect_leaks=0
+      - name: authentication smoke (60s)
+        run: cargo fuzz run fuzz_verify_authentication -- -max_total_time=60 -max_len=16384 -detect_leaks=0
+      - name: COSE key smoke (60s)
+        run: cargo fuzz run fuzz_cose_key -- -max_total_time=60 -max_len=8192 -detect_leaks=0
