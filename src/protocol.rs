@@ -337,30 +337,39 @@ pub fn verify_registration(
             WebauthnError::AttestationError(format!("attestation object CBOR parse error: {e}"))
         })?;
 
-    let attestation_entries = cbor_map_entries(&attestation_val).ok_or_else(|| {
-        WebauthnError::AttestationError("attestation object is not a CBOR map".to_string())
-    })?;
+    // RFC 8949 + CTAP2: the attestation object is a map with TEXT keys
+    // ("fmt", "attStmt", "authData") — not the integer-keyed COSE map.
+    let attestation_entries = match &attestation_val {
+        ciborium::Value::Map(entries) => entries.clone(),
+        _ => {
+            return Err(WebauthnError::AttestationError(
+                "attestation object is not a CBOR map".to_string(),
+            ))
+        }
+    };
 
     let mut fmt: Option<String> = None;
     let mut auth_data_bytes: Option<Vec<u8>> = None;
     let mut att_stmt: Option<ciborium::Value> = None;
 
     for (key, val) in &attestation_entries {
-        match *key {
-            1 => {
-                if let ciborium::Value::Text(s) = val {
-                    fmt = Some(s.clone());
+        if let ciborium::Value::Text(k) = key {
+            match k.as_str() {
+                "fmt" => {
+                    if let ciborium::Value::Text(s) = val {
+                        fmt = Some(s.clone());
+                    }
                 }
-            }
-            2 => {
-                if let Some(b) = cbor_bytes(val) {
-                    auth_data_bytes = Some(b);
+                "authData" => {
+                    if let Some(b) = cbor_bytes(val) {
+                        auth_data_bytes = Some(b);
+                    }
                 }
+                "attStmt" => {
+                    att_stmt = Some(val.clone());
+                }
+                _ => {}
             }
-            3 => {
-                att_stmt = Some(val.clone());
-            }
-            _ => {}
         }
     }
 
@@ -604,10 +613,11 @@ mod tests {
 
     fn build_attestation_object(auth_data: &[u8]) -> Vec<u8> {
         use ciborium::Value;
+        // Real CTAP2 attestation objects use TEXT keys.
         let map = vec![
-            (Value::Integer(1.into()), Value::Text("none".to_string())),
-            (Value::Integer(2.into()), Value::Bytes(auth_data.to_vec())),
-            (Value::Integer(3.into()), Value::Map(vec![])),
+            (Value::Text("fmt".to_string()), Value::Text("none".to_string())),
+            (Value::Text("attStmt".to_string()), Value::Map(vec![])),
+            (Value::Text("authData".to_string()), Value::Bytes(auth_data.to_vec())),
         ];
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();
@@ -1564,18 +1574,18 @@ mod tests {
                 ciborium::Value::Text("none".to_string()),
             ),
             (
-                ciborium::Value::Integer(2.into()),
+                ciborium::Value::Text("authData".to_string()),
                 ciborium::Value::Bytes(auth_data),
             ),
         ];
         if extra_att_key {
             entries.push((
-                ciborium::Value::Integer(9.into()),
+                ciborium::Value::Text("unknownKey".to_string()),
                 ciborium::Value::Bool(true),
             ));
         }
         entries.push((
-            ciborium::Value::Integer(3.into()),
+            ciborium::Value::Text("attStmt".to_string()),
             ciborium::Value::Map(vec![]),
         ));
         let mut buf = Vec::new();
