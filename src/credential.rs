@@ -74,10 +74,12 @@ pub struct RegistrationOptions {
     /// User information for the new credential.
     pub user: WebauthnUser,
     /// Required public key parameters.
+    #[cfg_attr(feature = "serde", serde(rename = "pubKeyCredParams"))]
     pub pub_key_cred_params: Vec<PubKeyCredParam>,
     /// Timeout hint in milliseconds.
     pub timeout: u64,
     /// Exclude already-registered credentials.
+    #[cfg_attr(feature = "serde", serde(rename = "excludeCredentials"))]
     pub exclude_credentials: Vec<ExcludeCredential>,
     /// Attestation conveyance preference.
     pub attestation: String,
@@ -104,6 +106,7 @@ pub struct WebauthnUser {
     /// Display name (e.g. "Alice Johnson").
     pub name: String,
     /// Username (e.g. "alice").
+    #[cfg_attr(feature = "serde", serde(rename = "displayName"))]
     pub display_name: String,
 }
 
@@ -114,6 +117,7 @@ pub struct PubKeyCredParam {
     /// Algorithm identifier (COSE algorithm).
     pub alg: i32,
     /// Credential type (always "public-key").
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub type_: String,
 }
 
@@ -124,6 +128,7 @@ pub struct ExcludeCredential {
     /// Base64url-encoded credential ID.
     pub id: String,
     /// Credential type.
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub type_: String,
     /// Optional transports hint.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -135,13 +140,15 @@ pub struct ExcludeCredential {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AuthenticatorSelection {
     /// Require resident key (discoverable credential).
+    #[cfg_attr(feature = "serde", serde(rename = "residentKey"))]
     pub resident_key: String,
     /// User verification requirement.
+    #[cfg_attr(feature = "serde", serde(rename = "userVerification"))]
     pub user_verification: String,
     /// Legacy L2 companion of `resident_key = "required"`: tells L2-only
     /// clients a discoverable credential is mandatory. Only meaningful when
     /// `resident_key` is `"required"` (WebAuthn L3 §5.4.4).
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(rename = "requireResidentKey", default))]
     pub require_resident_key: bool,
 }
 
@@ -170,12 +177,15 @@ pub struct AuthenticationOptions {
     /// Server-generated challenge (Base64url-encoded).
     pub challenge: String,
     /// Relying party ID.
+    #[cfg_attr(feature = "serde", serde(rename = "rpId"))]
     pub rp_id: String,
     /// Allowed credential IDs for this authentication.
+    #[cfg_attr(feature = "serde", serde(rename = "allowCredentials"))]
     pub allow_credentials: Vec<AllowCredential>,
     /// Timeout hint in milliseconds.
     pub timeout: u64,
     /// User verification requirement.
+    #[cfg_attr(feature = "serde", serde(rename = "userVerification"))]
     pub user_verification: String,
 }
 
