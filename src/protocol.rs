@@ -354,7 +354,7 @@ pub fn verify_registration(
                 "attestation object is not a CBOR map (decoded {} bytes, first: {}, value kind: {:?})",
                 attestation_bytes.len(),
                 hex(&attestation_bytes[..attestation_bytes.len().min(8)]),
-                other.kind(),
+                other.to_string().chars().take(24).collect::<String>(),
             )));
         }
     };
