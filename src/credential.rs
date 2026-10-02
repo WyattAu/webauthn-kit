@@ -84,6 +84,7 @@ pub struct RegistrationOptions {
     /// Attestation conveyance preference.
     pub attestation: String,
     /// Authenticator selection criteria.
+    #[cfg_attr(feature = "serde", serde(rename = "authenticatorSelection"))]
     pub authenticator_selection: AuthenticatorSelection,
 }
 
