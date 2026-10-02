@@ -59,7 +59,7 @@ pub const COSE_ALG_RS256: i32 = -257;
 /// COSE key map parameter label: key type (`kty`).
 const COSE_KEY_KTY: i64 = 1;
 /// COSE key map parameter label: algorithm (`alg`).
-const COSE_KEY_ALG: i64 = 2;
+const COSE_KEY_ALG: i64 = 3;
 /// COSE key map parameter label: curve (EC2/OKP) or modulus `n` (RSA).
 const COSE_KEY_CRV_N: i64 = -1;
 /// COSE key map parameter label: x coordinate (EC2) or exponent `e` (RSA).
@@ -518,7 +518,7 @@ pub(crate) mod tests {
         use ciborium::Value;
         let map = vec![
             (Value::Integer(1.into()), Value::Integer(2.into())),
-            (Value::Integer(2.into()), Value::Integer(alg.into())),
+            (Value::Integer(3.into()), Value::Integer(alg.into())),
             (Value::Integer((-1).into()), Value::Integer(crv.into())),
             (Value::Integer((-2).into()), Value::Bytes(x.to_vec())),
             (Value::Integer((-3).into()), Value::Bytes(y.to_vec())),
@@ -533,7 +533,7 @@ pub(crate) mod tests {
         use ciborium::Value;
         let map = vec![
             (Value::Integer(1.into()), Value::Integer(1.into())),
-            (Value::Integer(2.into()), Value::Integer((-8).into())),
+            (Value::Integer(3.into()), Value::Integer((-8).into())),
             (Value::Integer((-1).into()), Value::Integer(6.into())),
             (Value::Integer((-2).into()), Value::Bytes(id.to_vec())),
         ];
@@ -547,7 +547,7 @@ pub(crate) mod tests {
         use ciborium::Value;
         let map = vec![
             (Value::Integer(1.into()), Value::Integer(3.into())),
-            (Value::Integer(2.into()), Value::Integer((-257).into())),
+            (Value::Integer(3.into()), Value::Integer((-257).into())),
             (Value::Integer((-1).into()), Value::Bytes(n.to_vec())),
             (Value::Integer((-2).into()), Value::Bytes(e.to_vec())),
         ];
@@ -600,7 +600,7 @@ pub(crate) mod tests {
     #[test]
     fn test_parse_cose_key_missing_kty() {
         use ciborium::Value;
-        let map = vec![(Value::Integer(2.into()), Value::Integer((-7).into()))];
+        let map = vec![(Value::Integer(3.into()), Value::Integer((-7).into()))];
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();
         let result = parse_cose_key(&buf);
@@ -612,7 +612,7 @@ pub(crate) mod tests {
         use ciborium::Value;
         let map = vec![
             (Value::Integer(1.into()), Value::Integer(1.into())),
-            (Value::Integer(2.into()), Value::Integer((-8).into())),
+            (Value::Integer(3.into()), Value::Integer((-8).into())),
         ];
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();
@@ -878,7 +878,7 @@ pub(crate) mod tests {
     fn parse_cose_key_ec2_missing_crv() {
         let buf = cose_key_from(vec![
             (1, ciborium::Value::Integer(2.into())),
-            (2, ciborium::Value::Integer((-7).into())),
+            (3, ciborium::Value::Integer((-7).into())),
             (-2, ciborium::Value::Bytes(vec![0xAA; 32])),
             (-3, ciborium::Value::Bytes(vec![0xBB; 32])),
         ]);
@@ -892,7 +892,7 @@ pub(crate) mod tests {
     fn parse_cose_key_ec2_wrong_curve_is_unsupported() {
         let buf = cose_key_from(vec![
             (1, ciborium::Value::Integer(2.into())),
-            (2, ciborium::Value::Integer((-7).into())),
+            (3, ciborium::Value::Integer((-7).into())),
             (-1, ciborium::Value::Integer(3.into())), // P-384, not P-256
             (-2, ciborium::Value::Bytes(vec![0xAA; 48])),
             (-3, ciborium::Value::Bytes(vec![0xBB; 48])),
@@ -907,7 +907,7 @@ pub(crate) mod tests {
     fn parse_cose_key_ec2_missing_coordinates() {
         let kty_alg = vec![
             (1, ciborium::Value::Integer(2.into())),
-            (2, ciborium::Value::Integer((-7).into())),
+            (3, ciborium::Value::Integer((-7).into())),
             (-1, ciborium::Value::Integer(1.into())),
         ];
         let missing_x = cose_key_from(
@@ -934,7 +934,7 @@ pub(crate) mod tests {
     fn parse_cose_key_rsa_missing_modulus_or_exponent() {
         let missing_n = cose_key_from(vec![
             (1, ciborium::Value::Integer(3.into())),
-            (2, ciborium::Value::Integer((-257).into())),
+            (3, ciborium::Value::Integer((-257).into())),
             (-2, ciborium::Value::Bytes(vec![0x01, 0x00, 0x01])),
         ]);
         assert!(matches!(
@@ -944,7 +944,7 @@ pub(crate) mod tests {
 
         let missing_e = cose_key_from(vec![
             (1, ciborium::Value::Integer(3.into())),
-            (2, ciborium::Value::Integer((-257).into())),
+            (3, ciborium::Value::Integer((-257).into())),
             (-1, ciborium::Value::Bytes(vec![0xAA; 256])),
         ]);
         assert!(matches!(
@@ -957,7 +957,7 @@ pub(crate) mod tests {
     fn parse_cose_key_unknown_kty_is_error() {
         let buf = cose_key_from(vec![
             (1, ciborium::Value::Integer(99.into())),
-            (2, ciborium::Value::Integer((-7).into())),
+            (3, ciborium::Value::Integer((-7).into())),
         ]);
         assert!(matches!(
             parse_cose_key(&buf),
@@ -1142,7 +1142,7 @@ pub(crate) mod tests {
         // OKP structure with alg = ES256.
         let bad_alg = cose_key_from(vec![
             (1, ciborium::Value::Integer(1.into())),
-            (2, ciborium::Value::Integer((-7).into())),
+            (3, ciborium::Value::Integer((-7).into())),
             (-1, ciborium::Value::Integer(6.into())),
             (-2, ciborium::Value::Bytes(vec![0x42; 32])),
         ]);
@@ -1154,7 +1154,7 @@ pub(crate) mod tests {
         // EdDSA alg but wrong curve (X25519 is 4, not 6).
         let bad_crv = cose_key_from(vec![
             (1, ciborium::Value::Integer(1.into())),
-            (2, ciborium::Value::Integer((-8).into())),
+            (3, ciborium::Value::Integer((-8).into())),
             (-1, ciborium::Value::Integer(4.into())),
             (-2, ciborium::Value::Bytes(vec![0x42; 32])),
         ]);
@@ -1222,7 +1222,7 @@ pub(crate) mod tests {
         // Unknown labels are ignored during parsing.
         let with_extra = cose_key_from(vec![
             (1, ciborium::Value::Integer(1.into())),
-            (2, ciborium::Value::Integer((-8).into())),
+            (3, ciborium::Value::Integer((-8).into())),
             (-1, ciborium::Value::Integer(6.into())),
             (-2, ciborium::Value::Bytes(vec![0x42; 32])),
             (99, ciborium::Value::Text("ignored".to_string())),
@@ -1233,7 +1233,7 @@ pub(crate) mod tests {
         // OKP/EdDSA without the raw key bytes (-2) is rejected.
         let no_bytes = cose_key_from(vec![
             (1, ciborium::Value::Integer(1.into())),
-            (2, ciborium::Value::Integer((-8).into())),
+            (3, ciborium::Value::Integer((-8).into())),
             (-1, ciborium::Value::Integer(6.into())),
         ]);
         assert!(matches!(
