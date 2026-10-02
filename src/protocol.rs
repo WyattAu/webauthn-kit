@@ -354,7 +354,14 @@ pub fn verify_registration(
                 "attestation object is not a CBOR map (decoded {} bytes, first: {}, value kind: {:?})",
                 attestation_bytes.len(),
                 hex(&attestation_bytes[..attestation_bytes.len().min(8)]),
-                other.to_string().chars().take(24).collect::<String>(),
+                match other {
+                    ciborium::Value::Bytes(_) => "bytes",
+                    ciborium::Value::Text(_) => "text",
+                    ciborium::Value::Array(_) => "array",
+                    ciborium::Value::Integer(_) => "integer",
+                    ciborium::Value::Bool(_) => "bool",
+                    _ => "other",
+                },
             )));
         }
     };
