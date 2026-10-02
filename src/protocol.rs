@@ -341,10 +341,21 @@ pub fn verify_registration(
     // ("fmt", "attStmt", "authData") — not the integer-keyed COSE map.
     let attestation_entries = match &attestation_val {
         ciborium::Value::Map(entries) => entries.clone(),
-        _ => {
-            return Err(WebauthnError::AttestationError(
-                "attestation object is not a CBOR map".to_string(),
-            ))
+        other => {
+            let hex = |b: &[u8]| {
+                let mut out = String::new();
+                for x in b.iter().take(8) {
+                    use std::fmt::Write as _;
+                    let _ = write!(out, "{x:02x}");
+                }
+                out
+            };
+            return Err(WebauthnError::AttestationError(format!(
+                "attestation object is not a CBOR map (decoded {} bytes, first: {}, value kind: {:?})",
+                attestation_bytes.len(),
+                hex(&attestation_bytes[..attestation_bytes.len().min(8)]),
+                other.kind(),
+            )));
         }
     };
 
