@@ -42,3 +42,6 @@ panic = "deny"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.layers]
+tier = "L1"
