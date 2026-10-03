@@ -197,6 +197,7 @@ pub struct AllowCredential {
     /// Base64url-encoded credential ID.
     pub id: String,
     /// Credential type.
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub type_: String,
     /// Optional transports hint.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
