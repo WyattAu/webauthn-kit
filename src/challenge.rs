@@ -24,8 +24,8 @@
 //!   timeout.
 //! - **Predictability**: challenge bytes come from the OS CSPRNG (see
 //!   [`generate_challenge_bytes`]).
-//! - **Cloned authenticators**: [`check_sign_count`] rejects counters that
-//!   move backwards.
+//! - **Cloned authenticators**: [`check_sign_count`] rejects counters that do
+//!   not strictly increase, per WebAuthn §7.2.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,15 +52,20 @@ fn unix_now() -> i64 {
 /// Enforce the sign-count freshness state machine for an authentication
 /// assertion.
 ///
-/// Semantics (preserved from the reference implementation):
+/// Semantics, following WebAuthn §7.2 ("if the new sign count is *not greater
+/// than* the stored sign count, and neither is zero, the authenticator may
+/// have been cloned"):
 ///
-/// - If the stored counter is `0` (authenticators that do not implement the
-///   counter, or first use), the check is skipped and the assertion is
-///   accepted with whatever counter the authenticator reports.
-/// - Otherwise, a reported counter *strictly lower* than the stored counter
-///   indicates a cloned authenticator and is rejected.
-/// - An *equal* counter is accepted: many hardware keys only increment the
-///   counter occasionally and this must not lock users out.
+/// - If the stored counter is `0` there is no baseline to compare against, so
+///   the check is skipped: that is both an authenticator which does not
+///   implement a counter and a credential's first use.
+/// - If the *reported* counter is `0` the authenticator does not implement
+///   one, so the assertion carries no freshness signal either way and is
+///   accepted.
+/// - Otherwise the counter must strictly increase. A reported value that is
+///   lower *or equal* is the clone signal, and a replayed assertion carries
+///   the counter the authenticator last wrote — which is precisely the equal
+///   case, so accepting equality accepts replays.
 ///
 /// # Security note
 ///
@@ -74,9 +79,17 @@ fn unix_now() -> i64 {
 /// # Requirements
 /// REQ-WA-111, REQ-WA-112
 pub fn check_sign_count(current_sign_count: u32, new_sign_count: u32) -> Result<(), WebauthnError> {
-    if current_sign_count != 0 && new_sign_count < current_sign_count {
+    // The zero exemptions are load-bearing in both directions: a stored zero
+    // means no baseline, a reported zero means the authenticator has no
+    // counter. Everything else must strictly increase.
+    if current_sign_count != 0 && new_sign_count != 0 && new_sign_count <= current_sign_count {
+        let relation = if new_sign_count == current_sign_count {
+            "unchanged"
+        } else {
+            "decreased"
+        };
         return Err(WebauthnError::VerificationFailed(format!(
-            "Sign count decreased: {new_sign_count} < {current_sign_count} (possible cloned authenticator)"
+            "Sign count {relation}: {new_sign_count} <= {current_sign_count} (possible cloned authenticator)"
         )));
     }
     Ok(())
@@ -717,27 +730,60 @@ mod tests {
     }
 
     #[test]
-    fn test_check_sign_count_monotonic() {
+    fn test_check_sign_count_increases() {
         assert!(check_sign_count(1, 2).is_ok());
-        assert!(check_sign_count(5, 5).is_ok()); // equal allowed (no-counter authenticators)
-        assert!(check_sign_count(u32::MAX, u32::MAX).is_ok());
+        assert!(check_sign_count(5, 6).is_ok());
         assert!(check_sign_count(u32::MAX - 1, u32::MAX).is_ok());
     }
 
+    /// §7.2: "not greater than" is the clone signal, so an equal counter is
+    /// refused. A replayed assertion reports the counter the authenticator last
+    /// wrote, which is exactly this case.
     #[test]
-    fn test_check_sign_count_decrease_rejected() {
+    fn test_check_sign_count_equal_is_refused() {
+        let err = check_sign_count(5, 5).expect_err("an equal counter is a replay");
+        assert!(
+            err.to_string().contains("unchanged"),
+            "the error names the relation: {err}"
+        );
+        assert!(check_sign_count(u32::MAX, u32::MAX).is_err());
+    }
+
+    /// A stored zero means there is no baseline to compare against — first use
+    /// — and a reported zero means the authenticator implements no counter.
+    #[test]
+    fn test_check_sign_count_zero_exemptions() {
+        assert!(check_sign_count(0, 0).is_ok());
+        assert!(check_sign_count(0, 42).is_ok());
+        assert!(check_sign_count(0, u32::MAX).is_ok());
+        assert!(check_sign_count(42, 0).is_ok(), "no counter, no signal");
+        assert!(
+            check_sign_count(u32::MAX, 0).is_ok(),
+            "no counter, no signal"
+        );
+    }
+
+    #[test]
+    fn test_check_sign_count_decrease_reports_verification_failed() {
+        assert!(check_sign_count(10, 3).is_err());
+        assert!(check_sign_count(u32::MAX, 0).is_ok());
+    }
+
+    #[test]
+    fn test_check_sign_count_decrease_refused() {
         assert!(matches!(
             check_sign_count(10, 5),
             Err(WebauthnError::VerificationFailed(_))
         ));
         assert!(matches!(
-            check_sign_count(u32::MAX, 0),
+            check_sign_count(10, 9),
             Err(WebauthnError::VerificationFailed(_))
         ));
-        assert!(matches!(
-            check_sign_count(1, 0),
-            Err(WebauthnError::VerificationFailed(_))
-        ));
+        // A *reported* zero used to be treated as a decrease here. It is not:
+        // §7.2 skips the check when either side is zero, because a zero is how
+        // an authenticator says "I have no counter", which is no freshness
+        // signal rather than a backwards one. The zero cases are covered by
+        // test_check_sign_count_zero_exemptions.
     }
 
     #[test]

@@ -29,8 +29,8 @@ use crate::attestation::{verify_attestation, AttestationPolicy};
 use crate::challenge::check_sign_count;
 use crate::credential::{AuthenticationResult, RegistrationResult};
 use crate::crypto::{
-    alg_to_name, base64_decode_urlsafe, base64_encode_urlsafe, cbor_bytes, cbor_map_entries,
-    parse_cose_key, verify_cose_signature,
+    alg_to_name, base64_decode_urlsafe, base64_encode_urlsafe, cbor_bytes, parse_cose_key,
+    verify_cose_signature,
 };
 use crate::error::WebauthnError;
 use crate::policy::{BackupPolicy, CredentialPolicy, UserVerificationPolicy};
@@ -353,7 +353,7 @@ pub fn verify_registration(
             return Err(WebauthnError::AttestationError(format!(
                 "attestation object is not a CBOR map (decoded {} bytes, first: {}, value kind: {:?})",
                 attestation_bytes.len(),
-                hex(&attestation_bytes[..attestation_bytes.len().min(8)]),
+                hex(attestation_bytes.get(..8).unwrap_or(&attestation_bytes)),
                 match other {
                     ciborium::Value::Bytes(_) => "bytes",
                     ciborium::Value::Text(_) => "text",
@@ -633,9 +633,15 @@ mod tests {
         use ciborium::Value;
         // Real CTAP2 attestation objects use TEXT keys.
         let map = vec![
-            (Value::Text("fmt".to_string()), Value::Text("none".to_string())),
+            (
+                Value::Text("fmt".to_string()),
+                Value::Text("none".to_string()),
+            ),
             (Value::Text("attStmt".to_string()), Value::Map(vec![])),
-            (Value::Text("authData".to_string()), Value::Bytes(auth_data.to_vec())),
+            (
+                Value::Text("authData".to_string()),
+                Value::Bytes(auth_data.to_vec()),
+            ),
         ];
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut buf).unwrap();

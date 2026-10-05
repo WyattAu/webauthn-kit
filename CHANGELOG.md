@@ -5,6 +5,51 @@ Changelog](https://keepachangelog.com/) — versions follow [semver](https://sem
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-10-05
+
+### Fixed
+- **`check_sign_count` accepted an unchanged counter, so a replayed assertion
+  passed the clone check.** The rule was `new < current`; WebAuthn §7.2 makes
+  the clone signal a count *not greater than* the stored one, so the check is
+  now `new <= current`. A replayed assertion carries the counter the
+  authenticator last wrote, which is exactly the equal case — previously the
+  one case an in-order clone could hide behind. The error distinguishes the two
+  relations ("unchanged" vs "decreased") so a log says which one tripped.
+
+  The previous doc justified the gap with "many hardware keys only increment
+  the counter occasionally and this must not lock users out". That conflates an
+  *unchanged* counter with a *zero* counter: §7.2 skips the check when either
+  side is zero, and a zero is how an authenticator says it has no counter. Both
+  exemptions are preserved explicitly — a stored zero (no baseline, i.e. first
+  use) and a reported zero (no counter) — where the old code treated a reported
+  zero as a decrease and refused it.
+
+### Fixed (build)
+- `cargo clippy --all-targets` failed on `master`: a `slicing may panic` denial
+  in `protocol.rs` and an unused `cbor_map_entries` import. The library now
+  lints clean.
+
+### Fixed (tests)
+- **Six tests in `tests/vectors.rs` were failing on `master`** and had been for
+  long enough to look intentional. Two distinct fixture errors:
+  - Four tests wrote the COSE `alg` label as `2`. The label is `3` — WebAuthn
+    L2 §6.5.1.1 publishes the set as `1: kty, 3: alg, -1: crv, -2: x, -3: y`.
+    A parser reading `alg` from label 2 fails on every real authenticator while
+    still passing tests built from its own wrong fixtures.
+  - `build_attestation_object` used the integer labels 1/2/3. A CTAP2
+    attestation object uses *text* keys — `fmt`, `attStmt`, `authData` — so the
+    verifier correctly reported "missing authData" for an object that had one.
+
+### Added
+- A test that parses the `credentialPublicKey` bytes published in WebAuthn
+  L2 §6.5.1.1 verbatim, and checks the decoded `alg` and both EC2 coordinates.
+  Published bytes are the one interop check that cannot drift.
+
+### Changed
+- `test_check_sign_count_monotonic` and the fuzz suite's
+  `sign_count_equal_accepted` asserted the old, weaker rule. Both now assert the
+  §7.2 rule, so the suite fails if the gap returns.
+
 ## [0.3.1] - 2026-09-12
 
 ### Added

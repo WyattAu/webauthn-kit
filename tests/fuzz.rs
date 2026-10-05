@@ -224,11 +224,19 @@ fn sign_count_zero_stored_accepts_any_new() {
     assert!(check_sign_count(0, u32::MAX).is_ok());
 }
 
+/// WebAuthn §7.2: a counter that does not *strictly increase* is the clone
+/// signal, so an equal one is refused too. This suite previously asserted the
+/// opposite — that an equal counter is fine "because authenticators without
+/// counters report the same value forever" — which conflated a zero counter
+/// with an unchanged one. An authenticator with no counter reports zero, and
+/// zero is exempt on its own terms.
 #[test]
-fn sign_count_equal_accepted() {
-    // Authenticators without counters may report the same value forever.
-    assert!(check_sign_count(7, 7).is_ok());
-    assert!(check_sign_count(u32::MAX, u32::MAX).is_ok());
+fn sign_count_equal_rejected_as_possible_clone() {
+    assert!(matches!(
+        check_sign_count(7, 7),
+        Err(WebauthnError::VerificationFailed(_))
+    ));
+    assert!(check_sign_count(u32::MAX, u32::MAX).is_err());
 }
 
 #[test]
@@ -242,10 +250,10 @@ fn sign_count_decreasing_rejected() {
         check_sign_count(10, 9),
         Err(WebauthnError::VerificationFailed(_))
     ));
-    assert!(matches!(
-        check_sign_count(u32::MAX, 0),
-        Err(WebauthnError::VerificationFailed(_))
-    ));
+    // A reported zero is exempt rather than a decrease: it is how an
+    // authenticator says it has no counter, so there is no signal to read.
+    assert!(check_sign_count(u32::MAX, 0).is_ok());
+    assert!(check_sign_count(1, 0).is_ok());
 }
 
 #[test]

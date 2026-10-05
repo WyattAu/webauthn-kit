@@ -16,7 +16,9 @@
 //! fixed-vector challenge/origin negative case.
 
 use sha2::Digest;
-use webauthn_kit::crypto::{parse_cose_key, verify_cose_signature, COSE_ALG_RS256};
+use webauthn_kit::crypto::{
+    parse_cose_key, verify_cose_signature, CosePublicKey, COSE_ALG_ES256, COSE_ALG_RS256,
+};
 use webauthn_kit::policy::CredentialPolicy;
 use webauthn_kit::{
     base64_decode_urlsafe, base64_encode_urlsafe, check_sign_count, verify_authentication,
@@ -32,18 +34,22 @@ fn origins() -> Vec<String> {
 }
 
 fn build_attestation_object(auth_data: &[u8]) -> Vec<u8> {
+    // A CTAP2 attestation object uses *text* keys — "fmt", "attStmt",
+    // "authData". This fixture used the integer labels 1/2/3, which is the
+    // COSE_Key label set and not the attestation object's, so the RP reported
+    // "missing authData" for an object that plainly had one.
     let map = vec![
         (
-            ciborium::Value::Integer(1.into()),
-            ciborium::Value::Text("none".into()),
+            ciborium::Value::Text("fmt".to_string()),
+            ciborium::Value::Text("none".to_string()),
         ),
         (
-            ciborium::Value::Integer(2.into()),
-            ciborium::Value::Bytes(auth_data.to_vec()),
-        ),
-        (
-            ciborium::Value::Integer(3.into()),
+            ciborium::Value::Text("attStmt".to_string()),
             ciborium::Value::Map(vec![]),
+        ),
+        (
+            ciborium::Value::Text("authData".to_string()),
+            ciborium::Value::Bytes(auth_data.to_vec()),
         ),
     ];
     let mut buf = Vec::new();
@@ -58,7 +64,7 @@ fn build_cose_ec2_key(x: &[u8], y: &[u8]) -> Vec<u8> {
             ciborium::Value::Integer(2.into()),
         ),
         (
-            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer(3.into()),
             ciborium::Value::Integer((-7).into()),
         ),
         (
@@ -276,7 +282,7 @@ fn rs256_key_parse_and_dispatch() {
             ciborium::Value::Integer(3.into()),
         ),
         (
-            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer(3.into()),
             ciborium::Value::Integer((-257).into()),
         ),
         (
@@ -498,7 +504,7 @@ fn build_cose_ec2_key_384(x: &[u8], y: &[u8]) -> Vec<u8> {
             ciborium::Value::Integer(2.into()),
         ),
         (
-            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer(3.into()),
             ciborium::Value::Integer((-35).into()),
         ),
         (
@@ -549,7 +555,7 @@ fn eddsa_cose_key_parse_and_dispatch() {
             ciborium::Value::Integer(1.into()),
         ),
         (
-            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer(3.into()),
             ciborium::Value::Integer((-8).into()),
         ),
         (
@@ -589,4 +595,62 @@ fn base64url_no_pad_alphabet() {
         let dec = base64_decode_urlsafe(&enc).unwrap();
         assert_eq!(dec, data);
     }
+}
+
+/// The `credentialPublicKey` example from WebAuthn Level 2 §6.5.1.1, taken
+/// verbatim from the specification's CTAP2 canonical CBOR encoding of a P-256
+/// key for ES256. Pinning the published bytes is the one interop check that
+/// cannot drift: the COSE_Key label set is `1: kty, 3: alg, -1: crv, -2: x,
+/// -3: y`, and a parser that reads `alg` from label 2 (as this crate's own
+/// vector fixtures used to) will still round-trip its own tests while failing
+/// every real authenticator.
+#[test]
+fn parses_the_specification_credential_public_key_bytes() {
+    const SPEC_X_HEX: &str = "65eda5a12577c2bae829437fe338701a10aaa375e1bb5b5de108de439c08551d";
+    const SPEC_Y_HEX: &str = "1e52ed75701163f7f9e40ddf9f341b3dc9ba860af7e0ca7ca7e9eecd0084d19c";
+    let spec_bytes: Vec<u8> = vec![
+        0xA5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20, 0x65, 0xed, 0xa5, 0xa1, 0x25,
+        0x77, 0xc2, 0xba, 0xe8, 0x29, 0x43, 0x7f, 0xe3, 0x38, 0x70, 0x1a, 0x10, 0xaa, 0xa3, 0x75,
+        0xe1, 0xbb, 0x5b, 0x5d, 0xe1, 0x08, 0xde, 0x43, 0x9c, 0x08, 0x55, 0x1d, 0x22, 0x58, 0x20,
+        0x1e, 0x52, 0xed, 0x75, 0x70, 0x11, 0x63, 0xf7, 0xf9, 0xe4, 0x0d, 0xdf, 0x9f, 0x34, 0x1b,
+        0x3d, 0xc9, 0xba, 0x86, 0x0a, 0xf7, 0xe0, 0xca, 0x7c, 0xa7, 0xe9, 0xee, 0xcd, 0x00, 0x84,
+        0xd1, 0x9c,
+    ];
+
+    let (alg, key) = parse_cose_key(&spec_bytes).expect("the specification's key must parse");
+
+    assert_eq!(alg, COSE_ALG_ES256);
+    match key {
+        CosePublicKey::Ec2 { x, y } => {
+            // The two coordinates the specification publishes for this key.
+            let expected_x: Vec<u8> = (0..32)
+                .map(|i| u8::from_str_radix(&SPEC_X_HEX[i * 2..i * 2 + 2], 16).expect("hex"))
+                .collect();
+            let expected_y: Vec<u8> = (0..32)
+                .map(|i| u8::from_str_radix(&SPEC_Y_HEX[i * 2..i * 2 + 2], 16).expect("hex"))
+                .collect();
+            assert_eq!(x, expected_x, "x coordinate matches the published key");
+            assert_eq!(y, expected_y, "y coordinate matches the published key");
+        }
+        other => panic!("expected an EC2 key, got {other:?}"),
+    }
+
+    // The parsed key must actually be usable: a signature made by the
+    // corresponding private key verifies against it, which is the property a
+    // relying party depends on. Derived here from the RFC 6979-style fixed
+    // scalar is out of scope, so this checks dispatch instead — the label
+    // mistake this pins would have produced a non-Ec2 key here.
+    assert!(
+        verify_cose_signature(
+            COSE_ALG_ES256,
+            &CosePublicKey::Ec2 {
+                x: vec![0; 32],
+                y: vec![0; 32]
+            },
+            b"message",
+            &[0u8; 64]
+        )
+        .is_err(),
+        "a bogus signature is refused rather than accepted"
+    );
 }
