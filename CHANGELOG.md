@@ -5,6 +5,42 @@ Changelog](https://keepachangelog.com/) — versions follow [semver](https://sem
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-05
+
+### Added
+
+- **Sign-count regressions are now separable from the decision about them.**
+  `0.3.6` refused any counter that did not strictly increase. That is the right
+  default, and it is also *too blunt*: WebAuthn L3 §7.2 step 18 calls a
+  non-increasing counter *"a signal, but not proof"*, and names a benign cause
+  explicitly — *"a race condition where the Relying Party is processing
+  assertion responses in an order other than the order they were generated."*
+  A relying party that verifies assertions concurrently therefore locks out
+  legitimate users, because the assertion that arrives second carries the lower
+  counter and looks identical to a replay.
+
+  New: `classify_sign_count(current, new) -> SignCountVerdict` (`NoBaseline`,
+  `NoCounter`, `Increased`, `Equal`, `Decreased`), which never fails, and
+  `SignCountPolicy` / `OnRegression` so a host chooses `Reject` (the default) or
+  `Signal`. `check_sign_count` keeps its strict behaviour and is now defined in
+  terms of them.
+- `DeferredSignCountUpdate`, for L3 §7.2's last step: *"If the Relying Party
+  performs additional security checks beyond these WebAuthn authentication
+  ceremony steps, the above state updates SHOULD be deferred to after those
+  additional checks are completed successfully."* Applying the counter early
+  means a later check that fails has already advanced the stored value, and the
+  credential looks stale to every later assertion. A proposed counter of zero is
+  never stored — that would erase a real baseline for a credential whose
+  authenticator has no counter.
+
+### Fixed
+
+- **`cbor_map_entries` accepted duplicate CBOR map labels.** WebAuthn L3 §2.4
+  makes CTAP2 canonical CBOR a MUST and says decoders SHOULD reject duplicate
+  map keys. A duplicate label is a parser differential: two decoders can
+  disagree about which value wins, so one of them verifies a key the other
+  refuses. Duplicate integer labels are now rejected.
+
 ## [0.3.6] - 2026-10-05
 
 ### Fixed

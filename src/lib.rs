@@ -31,7 +31,8 @@
 //!
 //! ```
 //! use webauthn_kit::{
-//!     check_sign_count, verify_authentication, verify_registration, AttestationPolicy,
+//!     SignCountPolicy, SignCountVerdict, check_sign_count, classify_sign_count,
+//!     verify_authentication, verify_registration, AttestationPolicy,
 //!     AuthenticationParams, ChallengeStore, CredentialPolicy, UserVerificationPolicy,
 //!     WebauthnConfig,
 //! };
@@ -135,7 +136,10 @@ pub use aaguid::known_aaguid;
 pub use attestation::{
     verify_attestation, AttestationFormat, AttestationPolicy, AttestationResult, TrustLevel,
 };
-pub use challenge::{check_sign_count, ChallengeStore};
+pub use challenge::{
+    check_sign_count, classify_sign_count, ChallengeStore, DeferredSignCountUpdate, OnRegression,
+    SignCountPolicy, SignCountVerdict,
+};
 pub use config::WebauthnConfig;
 pub use credential::{
     AllowCredential, AuthenticationOptions, AuthenticationResponse, AuthenticationResult,

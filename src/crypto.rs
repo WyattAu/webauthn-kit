@@ -110,8 +110,18 @@ pub fn cbor_map_entries(val: &ciborium::Value) -> Option<Vec<(i64, ciborium::Val
     match val {
         Value::Map(entries) => {
             let mut result = Vec::with_capacity(entries.len());
+            // WebAuthn L3 §2.4 makes CTAP2 canonical CBOR a MUST and says
+            // decoders SHOULD reject duplicate map keys. A duplicate label is
+            // the classic parser-differential attack: two decoders disagree
+            // about which value wins, so one of them verifies a key the other
+            // rejects. Rejecting here means a single answer for everyone.
+            let mut seen: Vec<i64> = Vec::with_capacity(entries.len());
             for (k, v) in entries {
                 let key = cbor_i64(k)?;
+                if seen.contains(&key) {
+                    return None;
+                }
+                seen.push(key);
                 result.push((key, v.clone()));
             }
             Some(result)
@@ -963,6 +973,29 @@ pub(crate) mod tests {
             parse_cose_key(&buf),
             Err(WebauthnError::VerificationFailed(_))
         ));
+    }
+
+    #[test]
+    fn cbor_map_entries_rejects_duplicate_labels() {
+        // WebAuthn L3 §2.4: decoders SHOULD reject duplicate map keys. A
+        // duplicate is a parser differential — two decoders can disagree about
+        // which value wins, and one of them then verifies a key the other
+        // refuses. Here the two `alg` labels disagree: -7 (ES256) and -257
+        // (RS256).
+        use ciborium::Value;
+        let map = Value::Map(vec![
+            (Value::Integer(1.into()), Value::Integer(2.into())),
+            (Value::Integer(3.into()), Value::Integer((-7).into())),
+            (Value::Integer(3.into()), Value::Integer((-257).into())),
+        ]);
+        assert!(cbor_map_entries(&map).is_none());
+
+        // And a duplicate that does not conflict is still a duplicate.
+        let benign = Value::Map(vec![
+            (Value::Integer(1.into()), Value::Integer(2.into())),
+            (Value::Integer(1.into()), Value::Integer(2.into())),
+        ]);
+        assert!(cbor_map_entries(&benign).is_none());
     }
 
     #[test]

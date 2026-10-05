@@ -49,50 +49,198 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Enforce the sign-count freshness state machine for an authentication
-/// assertion.
+/// What a sign-count comparison says, independent of any policy.
 ///
-/// Semantics, following WebAuthn §7.2 ("if the new sign count is *not greater
-/// than* the stored sign count, and neither is zero, the authenticator may
-/// have been cloned"):
+/// WebAuthn L3 §7.2 step 18 is explicit that a counter which does not increase
+/// is *"a signal, but not proof"*, and it names one benign cause: *"a race
+/// condition where the Relying Party is processing assertion responses in an
+/// order other than the order they were generated."* So the comparison itself
+/// yields a fact; what the relying party does about it is a separate decision,
+/// and this enum is the first half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignCountVerdict {
+    /// The stored counter was zero, so there is no baseline: first use, or an
+    /// authenticator that has never signed.
+    NoBaseline,
+    /// The reported counter was zero, so the authenticator implements no
+    /// counter and the assertion carries no freshness signal either way.
+    NoCounter,
+    /// The counter strictly increased. Fresh.
+    Increased,
+    /// The counter is unchanged — which is exactly what a *replayed* assertion
+    /// looks like, since it carries the value the authenticator last wrote.
+    Equal,
+    /// The counter went backwards.
+    Decreased,
+}
+
+impl SignCountVerdict {
+    /// Whether this verdict is a counter regression — L3's "signal".
+    pub fn is_regression(self) -> bool {
+        matches!(self, Self::Equal | Self::Decreased)
+    }
+
+    /// Whether the assertion may proceed under a policy that treats regressions
+    /// as signals.
+    pub fn is_fresh(self) -> bool {
+        !self.is_regression()
+    }
+}
+
+/// Classify a sign-count comparison. Never fails; see [`SignCountVerdict`].
+pub fn classify_sign_count(current: u32, new: u32) -> SignCountVerdict {
+    if current == 0 {
+        SignCountVerdict::NoBaseline
+    } else if new == 0 {
+        SignCountVerdict::NoCounter
+    } else if new > current {
+        SignCountVerdict::Increased
+    } else if new == current {
+        SignCountVerdict::Equal
+    } else {
+        SignCountVerdict::Decreased
+    }
+}
+
+/// What a relying party does when the counter does not increase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnRegression {
+    /// Refuse the assertion. Correct for a relying party that processes
+    /// assertions one at a time, and the safe default.
+    Reject,
+    /// Accept the assertion and report the regression, so the caller can score
+    /// it. Required for a relying party that verifies assertions
+    /// concurrently: L3 §7.2 names out-of-order processing as a benign cause of
+    /// an apparently regressed counter, and a party that hard-fails there
+    /// locks out legitimate users.
+    Signal,
+}
+
+/// The relying party's sign-count policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignCountPolicy {
+    /// What to do on a counter regression.
+    pub on_regression: OnRegression,
+}
+
+impl Default for SignCountPolicy {
+    /// Fail closed: refuse on regression. A party that has not thought about
+    /// out-of-order processing gets the safe behaviour.
+    fn default() -> Self {
+        Self {
+            on_regression: OnRegression::Reject,
+        }
+    }
+}
+
+impl SignCountPolicy {
+    /// A policy for a relying party that verifies assertions concurrently and
+    /// would otherwise lock out users on an out-of-order race.
+    pub fn signal_on_regression() -> Self {
+        Self {
+            on_regression: OnRegression::Signal,
+        }
+    }
+
+    /// Apply this policy to a verdict.
+    pub fn evaluate(
+        &self,
+        current: u32,
+        new: u32,
+    ) -> (SignCountVerdict, Result<(), WebauthnError>) {
+        let verdict = classify_sign_count(current, new);
+        if verdict.is_regression() && self.on_regression == OnRegression::Reject {
+            let relation = if verdict == SignCountVerdict::Equal {
+                "unchanged"
+            } else {
+                "decreased"
+            };
+            return (
+                verdict,
+                Err(WebauthnError::VerificationFailed(format!(
+                    "Sign count {relation}: {new} <= {current} (possible cloned authenticator)"
+                ))),
+            );
+        }
+        (verdict, Ok(()))
+    }
+}
+
+/// Enforce the sign-count freshness state machine under the default policy.
 ///
-/// - If the stored counter is `0` there is no baseline to compare against, so
-///   the check is skipped: that is both an authenticator which does not
-///   implement a counter and a credential's first use.
-/// - If the *reported* counter is `0` the authenticator does not implement
-///   one, so the assertion carries no freshness signal either way and is
-///   accepted.
-/// - Otherwise the counter must strictly increase. A reported value that is
-///   lower *or equal* is the clone signal, and a replayed assertion carries
-///   the counter the authenticator last wrote — which is precisely the equal
-///   case, so accepting equality accepts replays.
+/// Equivalent to [`SignCountPolicy::default`] plus [`SignCountPolicy::evaluate`]:
+/// a counter that does not strictly increase is refused. The zero exemptions
+/// are load-bearing in both directions — a stored zero means no baseline, a
+/// reported zero means no counter.
 ///
 /// # Security note
 ///
-/// The caller must persist `new_sign_count` only after this function returns
-/// `Ok`, ideally with a compare-and-swap against `current_sign_count` so that
-/// two concurrent authentications cannot both bump the stored counter.
+/// L3 §7.2 treats a non-increasing counter as a signal, not proof, and names
+/// out-of-order processing as a benign cause. This function is therefore
+/// deliberately strict; a relying party that verifies assertions concurrently
+/// should call [`classify_sign_count`] (or
+/// [`SignCountPolicy::signal_on_regression`]) and score the result rather than
+/// lock the user out.
 ///
-/// Returns `Ok(())` when the counter is fresh, [`WebauthnError::VerificationFailed`]
-/// when clone activity is suspected.
+/// The caller must persist `new_sign_count` only after this function returns
+/// `Ok`, ideally with a compare-and-swap against `current_sign_count` so two
+/// concurrent authentications cannot both bump the stored counter. L3 §7.2 goes
+/// further: state updates (`signCount`, `backupState`, `uvInitialized`) SHOULD be
+/// **deferred until after** any additional security checks the relying party
+/// performs have succeeded, which [`DeferredSignCountUpdate`] makes explicit.
 ///
 /// # Requirements
 /// REQ-WA-111, REQ-WA-112
 pub fn check_sign_count(current_sign_count: u32, new_sign_count: u32) -> Result<(), WebauthnError> {
-    // The zero exemptions are load-bearing in both directions: a stored zero
-    // means no baseline, a reported zero means the authenticator has no
-    // counter. Everything else must strictly increase.
-    if current_sign_count != 0 && new_sign_count != 0 && new_sign_count <= current_sign_count {
-        let relation = if new_sign_count == current_sign_count {
-            "unchanged"
-        } else {
-            "decreased"
-        };
-        return Err(WebauthnError::VerificationFailed(format!(
-            "Sign count {relation}: {new_sign_count} <= {current_sign_count} (possible cloned authenticator)"
-        )));
+    SignCountPolicy::default()
+        .evaluate(current_sign_count, new_sign_count)
+        .1
+}
+
+/// A sign-count advance held back until the host's own checks have passed.
+///
+/// L3 §7.2: *"If the Relying Party performs additional security checks beyond
+/// these WebAuthn authentication ceremony steps, the above state updates SHOULD
+/// be deferred to after those additional checks are completed successfully."*
+/// Applying the counter early means a later check that fails has already
+/// advanced the stored value — the credential now looks stale to every
+/// subsequent assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredSignCountUpdate {
+    /// The counter the credential is believed to hold now.
+    pub current: u32,
+    /// The counter the assertion reported.
+    pub proposed: u32,
+}
+
+impl DeferredSignCountUpdate {
+    /// Stage an update. Takes no effect until [`Self::commit`].
+    pub fn stage(current: u32, new: u32) -> Self {
+        Self {
+            current,
+            proposed: new,
+        }
     }
-    Ok(())
+
+    /// The value to store, if this update should be applied at all.
+    ///
+    /// A proposed counter of zero is never stored: it means the authenticator
+    /// has no counter, and persisting it would erase a real baseline.
+    pub fn value(&self) -> Option<u32> {
+        if self.proposed == 0 {
+            None
+        } else {
+            Some(self.proposed)
+        }
+    }
+
+    /// Commit the staged update. Call only after the host's own checks passed.
+    ///
+    /// Returns the new counter, or the unchanged current one when there was
+    /// nothing to store.
+    pub fn commit(self) -> u32 {
+        self.value().unwrap_or(self.current)
+    }
 }
 
 /// A pending registration challenge.
@@ -760,6 +908,85 @@ mod tests {
         assert!(
             check_sign_count(u32::MAX, 0).is_ok(),
             "no counter, no signal"
+        );
+    }
+
+    /// L3 §7.2 step 18: a counter that does not increase is "a signal, but not
+    /// proof", and it names a benign cause — the RP processing assertions out
+    /// of order. The classification must therefore be available separately from
+    /// the decision, so a concurrent verifier can score rather than lock out.
+    #[test]
+    fn verdicts_separate_the_fact_from_the_decision() {
+        assert_eq!(classify_sign_count(0, 0), SignCountVerdict::NoBaseline);
+        assert_eq!(classify_sign_count(0, 7), SignCountVerdict::NoBaseline);
+        assert_eq!(classify_sign_count(7, 0), SignCountVerdict::NoCounter);
+        assert_eq!(classify_sign_count(7, 8), SignCountVerdict::Increased);
+        assert_eq!(classify_sign_count(7, 7), SignCountVerdict::Equal);
+        assert_eq!(classify_sign_count(7, 3), SignCountVerdict::Decreased);
+
+        assert!(classify_sign_count(7, 8).is_fresh());
+        assert!(!classify_sign_count(7, 8).is_regression());
+        // Both regressions are signals...
+        assert!(classify_sign_count(7, 7).is_regression());
+        assert!(classify_sign_count(7, 3).is_regression());
+    }
+
+    /// The scenario the split exists for: two assertions generated in order,
+    /// verified out of order. The second one to *arrive* carries the lower
+    /// counter, and refusing it would lock out a legitimate user.
+    #[test]
+    fn out_of_order_assertions_are_signals_under_a_concurrent_policy() {
+        let stored = 10;
+        // Assertion B (counter 11) is verified first and succeeds.
+        assert!(check_sign_count(stored, 11).is_ok());
+        let deferred = DeferredSignCountUpdate::stage(stored, 11);
+        // ...and only then does assertion A (counter 10) arrive. Against a
+        // single-threaded verifier this looks exactly like a replay.
+        let (verdict, result) = SignCountPolicy::signal_on_regression().evaluate(stored, 10);
+        assert_eq!(
+            verdict,
+            SignCountVerdict::Equal,
+            "the counter appears not to increase"
+        );
+        assert!(
+            result.is_ok(),
+            "but a concurrent verifier scores it, not fails it"
+        );
+        assert_eq!(
+            deferred.commit(),
+            11,
+            "and the stored counter advances exactly once"
+        );
+
+        // The default policy is still fail-closed: same input, refused.
+        assert!(
+            check_sign_count(stored, 10).is_err(),
+            "a verifier that has not opted into out-of-order handling must fail closed"
+        );
+    }
+
+    /// L3 §7.2: state updates SHOULD be deferred until additional security
+    /// checks succeed, and a zero must never overwrite a real baseline.
+    #[test]
+    fn deferred_update_does_not_erase_a_baseline() {
+        let update = DeferredSignCountUpdate::stage(41, 0);
+        assert_eq!(
+            update.value(),
+            None,
+            "a counter-less authenticator stores nothing"
+        );
+        assert_eq!(update.commit(), 41, "and the existing baseline survives");
+
+        let real = DeferredSignCountUpdate::stage(41, 42);
+        assert_eq!(real.value(), Some(42));
+        assert_eq!(real.commit(), 42);
+
+        // A regression must not be committed as if it were progress.
+        let regression = DeferredSignCountUpdate::stage(41, 7);
+        assert_eq!(
+            regression.value(),
+            Some(7),
+            "the host decides; the helper does not"
         );
     }
 
