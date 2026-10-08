@@ -234,6 +234,11 @@ pub struct AuthenticationResponse {
 pub struct RegistrationResult {
     /// The credential ID that was registered (Base64url-encoded).
     pub credential_id: String,
+    /// The attested COSE public key (raw CBOR bytes from the authenticator
+    /// data). Persist these bytes: they are the input to
+    /// [`crate::AuthenticationParams::public_key_cose`] for every future
+    /// authentication of this credential.
+    pub public_key_cose: Vec<u8>,
     /// Device name (from client or auto-generated).
     pub device_name: String,
     /// Raw attestation format string from the attestation object (e.g.
