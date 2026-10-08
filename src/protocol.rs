@@ -461,6 +461,7 @@ pub fn verify_registration(
 
     Ok(RegistrationResult {
         credential_id: credential_id_b64,
+        public_key_cose,
         device_name: format!("WebAuthn ({})", alg_to_name(alg)),
         attestation_format: fmt,
         attestation,

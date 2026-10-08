@@ -158,3 +158,8 @@ pub use policy::{
     UserVerificationPolicy,
 };
 pub use protocol::{verify_authentication, verify_registration, AuthenticationParams};
+// Re-export the CBOR value type so integrators extracting authData
+// themselves (e.g. pre-0.4 consumers of the registration COSE key) can
+// parse attestation objects without adding a version-pinned ciborium
+// dependency of their own.
+pub use ciborium;
