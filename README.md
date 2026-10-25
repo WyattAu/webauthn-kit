@@ -174,6 +174,13 @@ CA-chain policy/revocation are future work — see THREAT-MODEL.md.
 - New tests added during this baseline: DER SEQUENCE length-form boundaries and 0x80-length INTEGER long form (`crypto.rs`), authenticator-data truncation-stage pinning and the FLAG_AT registration gate (`protocol.rs`), default-clock wall-time recording, strict expiry boundary, and Debug secret omission (`challenge.rs`), and odd-length AAGUID rejection (`aaguid.rs`).
 - Reproduce: `CARGO_TARGET_DIR=/var/tmp/target-mutants-webauthn-kit cargo mutants --in-place --no-shuffle --all-features` (~5 min). Use `--in-place`: copy-mode `-j 4` reuses stale test binaries across parallel scenarios and reports false misses.
 
+## Stability
+
+`webauthn-kit` is 1.0. Breaking changes require a minor bump and a `#[deprecated]`
+window of at least one minor release; MSRV bumps are minor releases, never
+patch releases. `missing_docs` is denied and `unsafe` is forbidden. See the
+changelog for the short list of explicitly non-contractual behaviours.
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or

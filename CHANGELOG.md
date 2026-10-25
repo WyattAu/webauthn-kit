@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to this project are documented here. Format: [Keep a
-Changelog](https://keepachangelog.com/) — versions follow [semver](https://semver.org).
+Changelog](https://keepachangelog.com/): versions follow [semver](https://semver.org).
 
 ## [Unreleased]
 
@@ -180,6 +180,24 @@ Changelog](https://keepachangelog.com/) — versions follow [semver](https://sem
   `fido-u2f` attestation verification with real ring-signed certificate
   chains, trust-anchor policy cases, AAGUID extension checks, and every
   parse/verification error path.
+
+## [1.0.0] - 2026-10-25
+
+### Declared stable
+
+First 1.0. `webauthn-kit` verifies production passkey assertions; this release commits the CTAP2 parsing, COSE verification, replay/freshness, and sign-count surfaces as API-stable.
+
+### Guarantees from here on
+
+- Breaking changes to public items require a minor bump plus a `#[deprecated]`
+  window of at least one minor release.
+- MSRV bumps are minor releases, not patch releases.
+- `#![deny(missing_docs)]` and `#![forbid(unsafe_code)]` are enforced.
+- Verification results are deterministic: the same input yields the same verdict on any 1.x release.
+
+### Explicitly not guaranteed
+
+- New attestation formats may arrive in minors behind new methods; existing verification semantics will not change.
 
 ## [0.1.0] - 2026-09-04
 
