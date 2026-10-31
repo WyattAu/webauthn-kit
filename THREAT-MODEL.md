@@ -5,7 +5,7 @@ Status: **v1.1** (0.3.0; adds T13/T14/T15, closes OPEN-4) · Method: STRIDE over
 `check_sign_count`, `parse_cose_key`, `verify_cose_signature`, the
 `policy` types).
 
-Trust boundaries: (1) base64/JSON/CBOR bytes arriving from the browser client : all of it hostile; (2) the server-side challenge/sign-count state the
+Trust boundaries: (1) base64/JSON/CBOR bytes arriving from the browser client: all of it hostile; (2) the server-side challenge/sign-count state the
 integrator persists; (3) the `ring`/`ciborium`/`sha2` dependency tree.
 
 ## Assets
